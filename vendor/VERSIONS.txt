@@ -1,0 +1,13 @@
+# Сторонний код мини-приложения (SPEC_18 §4.2). Файлы не менять.
+# Проверка: python -B -X utf8 bot_next18\tools\fetch_miniapp_vendor.py (без --apply).
+library: TradingView Lightweight Charts
+version: 5.2.1
+license: Apache-2.0 (LICENSE, NOTICE рядом)
+npm: https://registry.npmjs.org/lightweight-charts/-/lightweight-charts-5.2.1.tgz
+npm-integrity: sha512-IVwoK1RLFiLPubaKIjNbtjWLnpPMqiABSrTay6whmNa8L1+19292VtHJ+BWyPUuLCwF0tcQlhEWd1CLB2a1nsQ==
+npm-member: package/dist/lightweight-charts.standalone.production.js (197922 байт), package/LICENSE
+notice-source: https://raw.githubusercontent.com/tradingview/lightweight-charts/v5.2.1/NOTICE
+status: скачано 2026-10-22
+sha256 lightweight-charts.standalone.production.js e21cc5caa0226ef30bd8549c50b9ef926615f2a4ee6b4e486353477a55f598cf
+sha256 LICENSE 70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823
+sha256 NOTICE f76c6afab94884448f0426e30d6e9d555ca7247894cd3484e477d2f87513036e

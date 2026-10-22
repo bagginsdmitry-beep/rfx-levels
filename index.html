@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://telegram.org; connect-src https://api.bybit.com https://fapi.binance.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'">
+<script src="https://telegram.org/js/telegram-web-app.js?64"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Уровни</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div id="title" class="title">Уровни</div>
+    <div id="subtitle" class="subtitle"></div>
+  </header>
+  <div id="banners" class="banners"></div>
+  <div id="fatal" class="fatal" hidden></div>
+
+  <main id="main" hidden>
+    <div id="chartWrap" class="chart-wrap">
+      <div id="chart" class="chart" aria-label="График M5 с линиями уровней"></div>
+      <div id="chartMsg" class="chart-msg" hidden></div>
+    </div>
+    <div class="toolbar">
+      <span id="src" class="src"></span>
+      <button id="refresh" class="btn small" type="button">Обновить</button>
+      <button id="tv" class="btn small" type="button">TradingView</button>
+    </div>
+    <div id="tvTicker" class="ticker" hidden></div>
+
+    <div id="lines" class="lines"></div>
+    <div id="status" class="status" aria-live="polite"></div>
+    <button id="reset" class="btn wide" type="button">Вернуть уровни бота</button>
+
+    <div id="calc" class="calc"></div>
+    <ul id="infos" class="msgs infos"></ul>
+    <ul id="errs" class="msgs errs"></ul>
+    <ul id="warns" class="msgs warns"></ul>
+
+    <div id="pageButtons" class="page-buttons">
+      <button id="cancelBtn" class="btn" type="button">Отмена</button>
+      <button id="doneBtn" class="btn primary" type="button" disabled>Готово</button>
+    </div>
+    <div id="sendErr" class="send-err" hidden></div>
+  </main>
+
+  <footer class="foot">
+    График: <a id="tvAttr" href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView Lightweight Charts™</a>, © TradingView, Inc.
+  </footer>
+</div>
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="rules.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+/* style.css — мини-приложение «Уровни». Цвета — из темы Telegram, с запасными для светлой и
+   тёмной темы вне Telegram. Ширина от 320 px, без горизонтальной прокрутки. */
+:root {
+  color-scheme: light dark;
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --fg: var(--tg-theme-text-color, #1e2126);
+  --hint: var(--tg-theme-hint-color, #6b7280);
+  --link: var(--tg-theme-link-color, #2163d6);
+  --btn: var(--tg-theme-button-color, #2163d6);
+  --btn-fg: var(--tg-theme-button-text-color, #ffffff);
+  --bg2: var(--tg-theme-secondary-bg-color, #f2f3f5);
+  --grid: rgba(128, 134, 145, 0.18);
+  --err-fg: #b42318; --err-bg: rgba(206, 38, 38, 0.10);
+  --warn-fg: #7a5200; --warn-bg: rgba(230, 168, 0, 0.16);
+  --info-fg: var(--hint); --info-bg: rgba(128, 134, 145, 0.12);
+  --line-blue: #2163d6; --line-red: #ce2626; --line-green: #188c3c; --line-gray: #8a8f98;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-scheme="light"]) {
+    --bg: var(--tg-theme-bg-color, #17191c);
+    --fg: var(--tg-theme-text-color, #e6e8eb);
+    --hint: var(--tg-theme-hint-color, #9aa1ab);
+    --link: var(--tg-theme-link-color, #6ea0ff);
+    --btn: var(--tg-theme-button-color, #3b78e7);
+    --bg2: var(--tg-theme-secondary-bg-color, #22252a);
+    --err-fg: #ff8a8a; --warn-fg: #ffd36b;
+    --line-blue: #5b8def; --line-red: #ff6b6b; --line-green: #4cc27a; --line-gray: #8d939c;
+  }
+}
+:root[data-scheme="dark"] {
+  --bg: var(--tg-theme-bg-color, #17191c);
+  --fg: var(--tg-theme-text-color, #e6e8eb);
+  --hint: var(--tg-theme-hint-color, #9aa1ab);
+  --link: var(--tg-theme-link-color, #6ea0ff);
+  --btn: var(--tg-theme-button-color, #3b78e7);
+  --bg2: var(--tg-theme-secondary-bg-color, #22252a);
+  --err-fg: #ff8a8a; --warn-fg: #ffd36b;
+  --line-blue: #5b8def; --line-red: #ff6b6b; --line-green: #4cc27a; --line-gray: #8d939c;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body {
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+           max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+}
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; }
+a { color: var(--link); }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace; }
+
+.top { margin: 0 0 6px; }
+.title { font-weight: 600; font-size: 17px; }
+.subtitle { color: var(--hint); font-size: 13px; }
+
+.banners { display: grid; gap: 6px; margin: 6px 0; }
+.banner { border-radius: 10px; padding: 8px 10px; font-size: 14px; background: var(--info-bg); color: var(--fg); }
+.banner.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.banner.err { background: var(--err-bg); color: var(--err-fg); }
+.fatal { margin: 24px 0; padding: 14px; border-radius: 12px; background: var(--err-bg); color: var(--err-fg); font-size: 16px; }
+
+.chart-wrap { position: relative; margin: 0 -12px; }
+.chart { height: 55vh; min-height: 260px; touch-action: none; -webkit-user-select: none; user-select: none; }
+.chart-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: 16px; color: var(--hint); background: var(--bg); }
+
+.toolbar { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; flex-wrap: wrap; }
+.src { flex: 1 1 auto; color: var(--hint); font-size: 12px; min-width: 0; }
+.ticker { margin: 4px 0 8px; font-size: 14px; }
+.ticker .mono { -webkit-user-select: all; user-select: all; background: var(--bg2); padding: 2px 6px; border-radius: 6px; }
+
+.btn { min-height: 44px; min-width: 44px; padding: 0 14px; border-radius: 10px; border: 0;
+  background: var(--bg2); color: var(--fg); cursor: pointer; touch-action: manipulation; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary { background: var(--btn); color: var(--btn-fg); }
+.btn.small { min-height: 44px; font-size: 14px; }
+.btn.wide { width: 100%; margin: 6px 0 10px; }
+
+.lines { display: grid; gap: 6px; margin: 6px 0 2px; }
+.row { display: grid; grid-template-columns: 52px minmax(0, 1fr); grid-template-areas: "name val" "btns btns";
+  align-items: center; gap: 4px 8px; padding: 6px 8px; border-radius: 12px; background: var(--bg2);
+  border-left: 4px solid transparent; }
+.row.sel { border-left-color: var(--sel, var(--btn)); }
+.row .name { grid-area: name; min-height: 44px; border: 0; background: transparent; font-weight: 600;
+  text-align: left; padding: 0; cursor: pointer; }
+.row .val { grid-area: val; min-width: 0; overflow-wrap: anywhere; }
+.row .price { font-size: 16px; }
+.row .bot { display: block; color: var(--hint); font-size: 12px; }
+.row .btns { grid-area: btns; display: flex; gap: 8px; justify-content: flex-end; }
+.row .btns .btn { padding: 0; width: 48px; font-size: 18px; background: var(--bg); }
+.row.static { grid-template-columns: minmax(52px, auto) minmax(0, 1fr); grid-template-areas: "name val"; }
+.row.static .name { display: flex; align-items: center; min-height: 36px; white-space: nowrap; }
+@media (min-width: 420px) {
+  .row { grid-template-columns: 52px minmax(0, 1fr) auto; grid-template-areas: "name val btns"; }
+  .row.static { grid-template-columns: minmax(52px, auto) minmax(0, 1fr); grid-template-areas: "name val"; }
+}
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+
+.status { min-height: 20px; color: var(--hint); font-size: 13px; }
+.calc { display: grid; gap: 4px; margin: 4px 0 8px; font-size: 14px; }
+.calc .main { font-weight: 600; }
+.msgs { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
+.msgs li { border-radius: 10px; padding: 7px 10px; font-size: 14px; }
+.errs li { background: var(--err-bg); color: var(--err-fg); }
+.warns li { background: var(--warn-bg); color: var(--warn-fg); }
+.infos li { background: var(--info-bg); color: var(--info-fg); }
+
+.page-buttons { display: flex; gap: 10px; margin: 10px 0; }
+.page-buttons .btn { flex: 1 1 0; }
+.send-err { margin: 6px 0; padding: 10px; border-radius: 10px; background: var(--err-bg); color: var(--err-fg); }
+
+.foot { margin-top: 18px; color: var(--hint); font-size: 12px; }
