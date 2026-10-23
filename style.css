@@ -113,6 +113,17 @@ a { color: var(--link); }
 .legset .btn { min-width: 0; padding: 0 2px; font-size: 14px; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
 
+/* 18.4: «Риск на сделку» под расчётом — кнопки поровну (при 320 px — до четырёх в ряд), поле суммы */
+.risk { display: grid; gap: 6px; margin: 2px 0 10px; padding: 8px; border-radius: 12px; background: var(--bg2); }
+.risk-title { font-weight: 600; font-size: 14px; }
+.risk-btns { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 4px; }
+.risk-btns .btn { min-width: 0; padding: 0 4px; font-size: 14px; white-space: nowrap; background: var(--bg); }
+.risk-btns .btn.on { background: var(--btn); color: var(--btn-fg); font-weight: 600; }
+.risk-field { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.risk-field input { flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 0 10px; border-radius: 10px;
+  border: 1px solid var(--grid); background: var(--bg); color: var(--fg); font-size: 16px; }
+.risk-note { color: var(--hint); font-size: 12px; }
+
 .status { min-height: 20px; color: var(--hint); font-size: 13px; }
 .calc { display: grid; gap: 4px; margin: 4px 0 8px; font-size: 14px; }
 .calc .main { font-weight: 600; }

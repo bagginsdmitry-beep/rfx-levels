@@ -3,7 +3,9 @@
  * bot_next19/tools/selftest_deno.js) итог кладётся в SELFTEST_RESULT, DOM не трогается.
  * 18.2: группы move, url_p3, payload_in_p3, move_excl (SPEC_191 §2, §7) и version_guard
  * (проверка версии файлов из app.js — AppGuard, SPEC_191 §15.1); move_step — ⤒⤓ при сдвиге
- * заявок: «половина пути» до соседней ноги (аудит 1.9.1, замечание 4; = стрелки бота). */
+ * заявок: «половина пути» до соседней ноги (аудит 1.9.1, замечание 4; = стрелки бота).
+ * 18.4 (SPEC_192 §18, §22): risk — риск на сделку (сумма из % базы, пределы, подпись, кнопки, объём
+ * на выбранный риск), url_rc — адреса с rc, payload_rq — нагрузки с rq. */
 (function (root) {
   'use strict';
   var R = root.LevelRules, FX = root.FIXTURES, AG = root.AppGuard;
@@ -59,7 +61,8 @@
   function payloadIn(c, sink) {
     var i = c.in;
     var p = R.parseQuery(i.q.split('#')[0]);
-    var got = p && R.buildPayload(p, i.lv, nn(i.last), i.pl, i.t, i.mark || null);
+    var got = p && R.buildPayload(p, i.lv, nn(i.last), i.pl, i.t, i.mark || null,
+      i.rq === undefined ? null : i.rq);              // 18.4: выбранный риск (строка) или null
     if (got) {
       var data = JSON.stringify(got);
       if (R.payloadBytes(data) > R.PAYLOAD_MAX_BYTES) return [false, 'больше 4096 байт'];
@@ -181,7 +184,32 @@
       var plain = R.stepLevel(lvls, lv[i.k], i.up);
       var got = { r: s(r), nb: R.moveNeighborLeg(i.d, lv, i.k, i.up), half: s(r) !== s(plain) };
       return [canon(got) === canon(c.exp), got];
-    }
+    },
+    // ---- 18.4 (SPEC_192)
+    risk: function (c) {          // риск на сделку: сумма, пределы, подпись, кнопки и объём на неё
+      var i = c.in, e = c.exp, rc = i.rc.split(',');
+      var usdt = i.kind === 'pct' ? R.riskFromPct(i.v, i.rb) : R.riskFloor(i.v);
+      var lim = R.riskLimitsUsdt(i.rb, rc);
+      var got = { usdt: s(usdt), ok: R.riskInLimits(usdt, i.rb, rc),
+        pct: R.riskPctLabel(i.kind === 'pct' ? i.v : R.riskPctExact(usdt, i.rb)),
+        lim: [s(lim[0]), s(lim[1])], quick: R.riskQuick(i.rb, rc), plan: null,
+        inp: s(R.parseRiskInput(i.inp)) };        // поле суммы: запятая = точка, до 2 знаков
+      var same = canon(got) === canon({ usdt: e.usdt, ok: e.ok, pct: e.pct, lim: e.lim, quick: e.quick,
+        plan: null, inp: e.inp });
+      if (R.cmp(usdt, R.ZERO) > 0) {
+        if (!e.plan) return [false, got];
+        var pin = { d: i.d, tk: i.tk, qs: i.qs, mq: i.mq, mn: i.mn, xq: i.xq, rk: s(usdt), cap: i.cap,
+          tol: i.tol, lv: i.lv };
+        var r = sizing({ in: pin, exp: e.plan });
+        got.plan = r[1];
+        same = same && r[0];
+      } else if (e.plan !== null) {
+        same = false;
+      }
+      return [same, got];
+    },
+    url_rc: url,
+    payload_rq: payloadIn
   };
 
   function run() {
@@ -215,7 +243,7 @@
       payloads: {
         source: 'miniapp/selftest.html (rules.js ' + R.PAGE_VERSION + ')',
         note: 'полезные нагрузки, собранные страницей из примеров payload_in, payload_in_g2, payload_in_p2, ' +
-          'payload_in_p3; для обратной сверки parse_payload (bot_next19/tests/fixtures/miniapp_payloads_js191.json)',
+          'payload_in_p3, payload_rq; для обратной сверки parse_payload (bot_next19/tests/fixtures/miniapp_payloads_js192.json)',
         cases: payloads
       } };
   }

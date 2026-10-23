@@ -14,17 +14,25 @@
  * исполнений: ждущие заявки L1–L3, стоп и цель двигаются, объём пересчитывается на 1 R (нагрузка
  * версии 3); снятие одной заявки — как 18.1 (нагрузка версии 2). Сдвиг и снятие в одной правке
  * нельзя. Python-копия правил сдвига — miniapp_rules.check_orders_move.
+ *
+ * Версия 18.3: в текстах для владельца «заявка» вместо «нога» (решение владельца 2026-10-23);
+ * правила, коды, адреса и нагрузки те же.
+ *
+ * Версия 18.4 (SPEC_192 §18, §22): риск на сделку. Необязательный параметр адреса rc=<min>,<max>
+ * (пределы в % базы rb; только режим g, версии 1 и 2) включает выбор риска: 0.5 / 1 / 2 % базы
+ * (riskFromPct — вниз до 0.01 USDT) или сумма в USDT; объём — planForEdit с выбранной суммой вместо
+ * rk; нагрузка получает ключ rq (выбранный риск в USDT) между pb и pv. Адрес без rc — всё как 18.3.
  */
 (function (root) {
   'use strict';
 
-  var PAGE_VERSION = '18.2';
-  var KNOWN_PAGE_VERSIONS = ['18.0', '18.1', '18.2'];   // pv адреса, при котором не нужна полоса «Страница обновилась»
+  var PAGE_VERSION = '18.4';
+  var KNOWN_PAGE_VERSIONS = ['18.0', '18.1', '18.2', '18.3', '18.4'];   // pv адреса, при котором не нужна полоса «Страница обновилась»
   var PAYLOAD_MAX_BYTES = 4096;
   var STOP_BUF_PIPS = 5;                         // common.RFX_STOP_BUF_PIPS: стоп = нижняя нога ∓ 5 пипсов
   var LINES = ['L1', 'L2', 'L3', 'SL', 'TP'];
   var LEGS = ['L1', 'L2', 'L3'];
-  var URL_KEYS = ['v', 'pv', 'm', 'c', 'e', 's', 'd', 'tk', 'qs', 'mq', 'mn', 'xq', 'rk', 'rb',
+  var URL_KEYS = ['v', 'pv', 'm', 'c', 'e', 's', 'd', 'tk', 'qs', 'mq', 'mn', 'xq', 'rk', 'rb', 'rc',
     'cap', 'tol', 'fm', 'ft', 'a', 'rv', 'ex', 'b', 'im', 'pp', 'o', 'pq', 'pa', 'q', 'w', 'cx', 'mv'];
   var G_KEYS = ['v', 'pv', 'm', 'c', 'e', 's', 'd', 'tk', 'qs', 'mq', 'mn', 'xq', 'rk', 'rb', 'cap',
     'tol', 'fm', 'ft', 'a', 'rv', 'ex', 'b'];
@@ -229,12 +237,64 @@
     return { tp: -toNum(div(atTp, plan.risk)), sl: -toNum(div(atSl, plan.risk)) };
   }
 
+  // ------------------------------------------------------------------ SPEC_192 §18, §22: риск на сделку
+  var RISK_QUICK_PCT = ['0.5', '1', '2'];        // common.RISK_QUICK_PCT: быстрый выбор, % базы
+  var CENT = Q(1n, 100n), HUNDRED = Q(100n);
+  var RX_RC = /^[0-9]{1,2}(\.[0-9]{1,2})?,[0-9]{1,2}(\.[0-9]{1,2})?$/;
+  var RX_RQ = /^[0-9]{1,9}(\.[0-9]{1,2})?$/;      // rq нагрузки и сумма в поле страницы
+  /** MR.risk_from_pct: % базы → USDT, вниз до 0.01 (0.33 % × 12 345.67 = 40.74). */
+  function riskFromPct(pct, base) { return roundStep(div(mul(dec(pct), dec(base)), HUNDRED), CENT, 'floor'); }
+  /** Сумма до 0.01 вниз (риск по умолчанию rk, если в нём больше двух знаков). */
+  function riskFloor(usdt) { return roundStep(dec(usdt), CENT, 'floor'); }
+  /** Точный процент базы: usdt × 100 / база. */
+  function riskPctExact(usdt, base) { return div(mul(dec(usdt), HUNDRED), dec(base)); }
+  /** Пределы точные (§18): сумма > 0 и min ≤ usdt × 100 / база ≤ max. rc — [min, max] строками. */
+  function riskInLimits(usdt, base, rc) {
+    var u = dec(usdt), b = dec(base);
+    if (cmp(u, ZERO) <= 0) return false;
+    var x = mul(u, HUNDRED);
+    return cmp(mul(dec(rc[0]), b), x) <= 0 && cmp(x, mul(dec(rc[1]), b)) <= 0;
+  }
+  /** Наименьшая и наибольшая сумма до 0.01 в пределах (подпись «10–300 USDT»). */
+  function riskLimitsUsdt(base, rc) {
+    var b = dec(base);
+    return [roundStep(div(mul(dec(rc[0]), b), HUNDRED), CENT, 'ceil'),
+      roundStep(div(mul(dec(rc[1]), b), HUNDRED), CENT, 'floor')];
+  }
+  /** Кнопки быстрого выбора, чья сумма (её получит бот в rq) в пределах. */
+  function riskQuick(base, rc) {
+    return RISK_QUICK_PCT.filter(function (x) { return riskInLimits(riskFromPct(x, base), base, rc); });
+  }
+  /** Процент для показа: не больше двух знаков (к чётному), без лишних нулей: «0.5», «1.25», «1». */
+  function riskPctLabel(pct) {
+    var t = toFixedHE(dec(pct), 2);
+    return t.indexOf('.') >= 0 ? t.replace(/0+$/, '').replace(/\.$/, '') : t;
+  }
+  /** Сумма из поля страницы: цифры и точка (запятая = точка), до 2 знаков; иначе null. */
+  function parseRiskInput(text) {
+    var t = String(text === null || text === undefined ? '' : text).trim().replace(',', '.');
+    return RX_RQ.test(t) ? dec(t) : null;
+  }
+  /** Выбранный риск (USDT, дробь) для адреса с rc: risk не задан — rk до 0.01 вниз; строка — по
+   *  образцу rq; дробь — до 0.01 вниз. Неверный формат, не больше 0 или вне пределов — null.
+   *  Адрес без rc — null (выбора нет, риск — rk, как 18.3). */
+  function riskSel(p, risk) {
+    if (!p || !p.rc) return null;
+    var u;
+    if (risk === null || risk === undefined) u = riskFloor(p.rk);
+    else if (isQ(risk)) u = riskFloor(risk);
+    else if (typeof risk === 'string' && RX_RQ.test(risk)) u = dec(risk);
+    else return null;
+    if (!RX_RQ.test(toApiStr(u))) return null;
+    return riskInLimits(u, p.rb, p.rc) ? u : null;
+  }
+
   // ------------------------------------------------------------------ §3.2 порядок уровней
   function word(d, up) { return (up === (d === 1)) ? 'выше' : 'ниже'; }
   var TXT_TICK = 'цена не на шаге цены';
   var TXT_FAR = 'уровень слишком далеко от цены';
-  var TXT_LEGSET = 'набор ног не совпадает с подсказкой';
-  var TXT_NO_LEGS = 'нужна хотя бы одна нога';
+  var TXT_LEGSET = 'набор заявок не совпадает с подсказкой';
+  var TXT_NO_LEGS = 'нужна хотя бы одна заявка';
   function far(v, ref) { return cmp(muli(v, 2), ref) < 0 || cmp(v, muli(ref, 2)) > 0; }
   function atLeastTick(a, b, d, tick) { return cmp(muli(sub(a, b), d), tick) >= 0; }
   /** Ноги, что есть, по порядку L1, L2, L3. */
@@ -263,7 +323,7 @@
         }
       }
       if (!atLeastTick(lv[deep], lv.SL, d, tick)) {
-        errs.push(['E_ORDER_LEG_STOP', 'стоп должен быть ' + word(d, false) + ' самой глубокой ноги']);
+        errs.push(['E_ORDER_LEG_STOP', 'стоп должен быть ' + word(d, false) + ' самой глубокой заявки']);
       }
     }
     if (has(ref) && cmp(ref, ZERO) > 0 && present.some(function (v) { return far(v, ref); })) {
@@ -342,7 +402,7 @@
    *  Добавить L3 — середина между самой глубокой ногой выше и стопом. Зоны нет — отказ с причиной. */
   function addStart(d, leg, own, bot, imp, tick) {
     var idx = LEGS.indexOf(leg);
-    if (idx < 0) return [null, 'неизвестная нога'];
+    if (idx < 0) return [null, 'неизвестная заявка'];
     if (has(own[leg])) return [null, leg + ' уже есть'];
     var up = 'TP', down = 'SL', i;
     for (i = idx - 1; i >= 0; i--) if (has(own[LEGS[i]])) { up = LEGS[i]; break; }
@@ -377,7 +437,7 @@
       return [priceForDirection(div(add(lo, hi), TWO), tick, d), ''];
     }
     if (leg === 'L3') {                                     // добавить L3
-      if (up === 'TP') return [null, 'нет ноги выше L3'];
+      if (up === 'TP') return [null, 'нет заявки выше L3'];
       lo = add(own.SL, t);
       hi = sub(own[up], t);
       if (short(lo, hi)) return [null, 'нет места для L3 — сначала ' + (d === 1 ? 'опустите' : 'поднимите') + ' стоп'];
@@ -416,10 +476,10 @@
       }
     }
     if (waiting.some(function (p) { return !atLeastTick(p, stop, d, tick); })) {
-      errs.push(['E_POS_STOP_WAITING', 'стоп должен быть ' + word(d, false) + ' ждущих ног']);
+      errs.push(['E_POS_STOP_WAITING', 'стоп должен быть ' + word(d, false) + ' ждущих заявок']);
     }
     if (waiting.some(function (p) { return !atLeastTick(tp, p, d, tick); })) {
-      errs.push(['E_POS_TP_WAITING', 'цель должна быть ' + word(d, true) + ' ждущих ног']);
+      errs.push(['E_POS_TP_WAITING', 'цель должна быть ' + word(d, true) + ' ждущих заявок']);
     }
     var ref = has(last) ? last : avg;
     if (has(ref) && cmp(ref, ZERO) > 0 && (far(stop, ref) || far(tp, ref))) {
@@ -661,6 +721,8 @@
   /** Разбор адреса (строка запроса без «?» или целый адрес). Неверно или неполно — null.
    *  v=1 — ровно как 18.0 (новые ключи — отказ); v=2, m=g — плюс im, pp, черновик o с любым
    *  набором; v=2, m=p — плюс cx, mv, pp, позиция может быть нулевой (сетка без исполнений).
+   *  18.4 (SPEC_192 §22): необязательный rc=<min>,<max> (% базы) — только m=g (v=1 и v=2), формат
+   *  RX_RC, 0 < min ≤ max; в разборе — rc: [min, max] строками (ключа нет, если нет rc).
    *  v=3 (только m=p, SPEC_191 §7.1) — ключи как у v=2, m=p; pq = 0, pa = «-», mv = 1, w не пуст,
    *  ноги b = ноги w с теми же ценами, cx ⊆ w или «-» (cx = []); o — либо черновик сдвига (тот же
    *  набор ног, цены любые), либо «-» на месте одной ноги из cx при остальных ценах как в b. */
@@ -682,7 +744,7 @@
     var v2 = ver !== '1';               // ключи версии 2 — и у версии 3
     var need = G_KEYS.concat(m === 'p' ? P_KEYS : []).concat(v2 ? (m === 'g' ? G2_KEYS : P2_KEYS) : []);
     for (var i = 0; i < need.length; i++) if (!hasKey(need[i])) return null;
-    var allowed = need.concat(['o']);
+    var allowed = need.concat(m === 'g' ? ['o', 'rc'] : ['o']);          // rc — только режим g (18.4)
     if (Object.keys(got).some(function (k) { return allowed.indexOf(k) < 0; })) return null;
 
     function fail() { throw new Error('bad'); }
@@ -739,6 +801,12 @@
         a: intv('a', RX_INT), rv: intv('rv', RX_INT), ex: intv('ex', RX_INT),
         b: levels(got.b, v2 && m === 'p' ? anyLeg : v1Legs),
         im: null, pp: null, pq: null, pa: null, q: null, w: null, cx: null, mv: null };
+      if (hasKey('rc')) {                                // 18.4: пределы выбора риска, % базы
+        if (!RX_RC.test(got.rc)) fail();
+        var rc = got.rc.split(',');
+        if (cmp(dec(rc[0]), ZERO) <= 0 || cmp(dec(rc[0]), dec(rc[1])) > 0) fail();
+        out.rc = rc;
+      }
       if (v2 && m === 'g') {
         out.im = num('im', true);
         out.pp = num('pp', true);
@@ -832,11 +900,20 @@
    *  m = g: набор ног = набору b → версия 1 (ровно 18.0), иначе — версия 2 с lx (только адрес v=2).
    *  m = p: без отметки — версия 1 (стоп и цель), с отметкой — версия 2 (lv «=»/«-», lx ["-Lk"]).
    *  m = p, адрес v=3: без отметки — версия 3 (сдвиг заявок, movePayload; final — все пять линий),
-   *  с отметкой — версия 2, как 18.1, если ни одна линия не сдвинута. */
-  function buildPayload(p, final, last, platform, tMs, mark) {
+   *  с отметкой — версия 2, как 18.1, если ни одна линия не сдвинута.
+   *  18.4: адрес с rc (только m = g) — riskReq — выбранный риск (строка или дробь; null — риск по
+   *  умолчанию rk); объём — на него, в нагрузке ключ rq между pb и pv; неверный или вне пределов —
+   *  null. Адрес без rc — riskReq не читается, нагрузка как 18.3. */
+  function buildPayload(p, final, last, platform, tMs, mark, riskReq) {
     var d = p.d, inst = instOf(p), tick = inst.tk;
-    var lvOut, pq, pr, pb, risk, lx = null;
+    var lvOut, pq, pr, pb, risk, lx = null, rq = null;
     var fin = final.map(function (x) { return decOrNull(x); });
+    if (p.m === 'g' && p.rc) {
+      var sel = riskSel(p, riskReq);
+      if (sel === null) return null;
+      inst.rk = sel;
+      rq = toApiStr(sel);
+    }
     if (p.m === 'g') {
       var bot = levelsOf(p.b);
       var lv = {};
@@ -880,6 +957,7 @@
     out.pq = pq;
     out.pr = pr;
     out.pb = pb;
+    if (rq !== null) out.rq = rq;
     out.pv = PAGE_VERSION;
     out.pl = platformTag(platform);
     out.t = tMs;
@@ -926,6 +1004,9 @@
     m5Levels: m5Levels, stepLevel: stepLevel, moveNeighborLeg: moveNeighborLeg, stepMoveLevel: stepMoveLevel,
     parseQuery: parseQuery, parsePageUrl: parsePageUrl, instOf: instOf, levelsOf: levelsOf,
     waitingQP: waitingQP, buildPayload: buildPayload, payloadBytes: payloadBytes,
-    platformTag: platformTag
+    platformTag: platformTag,
+    RISK_QUICK_PCT: RISK_QUICK_PCT, riskFromPct: riskFromPct, riskFloor: riskFloor,
+    riskPctExact: riskPctExact, riskInLimits: riskInLimits, riskLimitsUsdt: riskLimitsUsdt,
+    riskQuick: riskQuick, riskPctLabel: riskPctLabel, parseRiskInput: parseRiskInput, riskSel: riskSel
   };
 })(typeof window !== 'undefined' ? window : globalThis);

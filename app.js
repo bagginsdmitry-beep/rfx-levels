@@ -10,6 +10,14 @@
  * в одной правке нельзя. В начале init() — проверка версии файлов (смесь 18.1 и 18.2 из кэша →
  * «Страница обновляется»), боту в этом случае ничего не уходит.
  *
+ * Версия 18.3: в текстах для владельца «заявка» вместо «нога» (решение владельца 2026-10-23);
+ * поведение, адреса и нагрузки те же.
+ *
+ * Версия 18.4 (SPEC_192 §22): риск на сделку. Адрес режима g с rc — блок «Риск на сделку» под
+ * расчётом: кнопки 0.5 / 1 / 2 % базы (в пределах rc), отмеченная — риск по умолчанию (rk); поле
+ * суммы в USDT; объём считается на выбранный риск, в данные для бота уходит rq. Вне пределов —
+ * ошибка, «Готово» неактивна. Адрес без rc — всё как 18.3.
+ *
  * Сеть: только свечи с api.bybit.com (запасной — fapi.binance.com). Ничего не хранит в браузере
  * (ни хранилища, ни куки), никуда ничего не отправляет, кроме sendData в чат бота.
  */
@@ -17,11 +25,11 @@
   'use strict';
 
   // ------------------------------------------------------------------ SPEC_191 §15.1: версия файлов
-  var APP_PAGE_VERSION = '18.2';
+  var APP_PAGE_VERSION = '18.4';
   var GUARD_TEXT = 'Страница обновляется — закройте и откройте её через минуту.';
   var REQUIRED_IDS = ['app', 'title', 'subtitle', 'banners', 'fatal', 'main', 'chartWrap', 'chart',
     'chartMsg', 'src', 'refresh', 'tv', 'tvTicker', 'lines', 'legset', 'status', 'reset', 'calc',
-    'infos', 'errs', 'warns', 'pageButtons', 'cancelBtn', 'doneBtn', 'sendErr', 'tvAttr'];
+    'risk', 'infos', 'errs', 'warns', 'pageButtons', 'cancelBtn', 'doneBtn', 'sendErr', 'tvAttr'];
   /** Пусто — файлы одной версии; иначе текст для владельца. rules — window.LevelRules (или нет),
    *  metaVer — <meta name="page-version"> (или null), hasId(id) — есть ли элемент страницы. */
   function guardText(rules, metaVer, hasId) {
@@ -57,6 +65,9 @@
     cur: {}, start: {}, bot: {}, imp: null, pip: null,
     mark: null, startMark: null,
     pq: null, pa: null, wq: [],
+    // 18.4: риск на сделку (адрес режима g с rc). risk — выбранная сумма (дробь) или null (неверно);
+    // riskPct — подпись процента; riskBtn — последняя кнопка {usdt, pct}; riskText — текст поля.
+    rc: null, riskDef: null, risk: null, riskPct: '', riskBtn: null, riskText: '', riskUi: null,
     sel: null,
     bars: [], src: null, last: null, m5: [], firstLoadDone: false, loading: false, loadFailed: false,
     chart: null, series: null, plines: {}, markersSet: false,
@@ -197,6 +208,13 @@
       S.imp = R.decOrNull(p.im);
       R.LINES.forEach(function (k) { S.cur[k] = lvO[k]; });
       S.sel = R.legsOf(S.cur)[0] || 'SL';               // первая нога, что есть
+      if (p.rc) {                                       // 18.4: выбор риска; по умолчанию — rk
+        S.rc = p.rc;
+        S.riskDef = R.riskFloor(p.rk);
+        S.riskBtn = { usdt: S.riskDef, pct: riskLabelOf(S.riskDef) };
+        S.risk = S.riskDef;
+        S.riskPct = S.riskBtn.pct;
+      }
     } else {
       S.posV2 = p.v >= 2;
       S.move = p.v === 3;
@@ -248,6 +266,7 @@
     setupButtons();
     setupChart();
     buildList();
+    buildRisk();
     ['pointerup', 'pointercancel', 'blur'].forEach(function (t) { window.addEventListener(t, stopRepeat); });
     document.addEventListener('visibilitychange', stopRepeat);
     applyTheme();
@@ -380,6 +399,122 @@
   // ------------------------------------------------------------------ расчёт
   function finalLevels() { return R.LINES.map(function (k) { return has(S.cur[k]) ? S.cur[k] : null; }); }
 
+  // ------------------------------------------------------------------ 18.4: риск на сделку (SPEC_192 §22)
+  /** Подпись процента суммы: «0.5», «1.25» (до двух знаков). */
+  function riskLabelOf(usdt) { return R.riskPctLabel(R.riskPctExact(usdt, S.p.rb)); }
+  /** Сумма для показа: «300», «12.35», «1 234.50» (целая — без «.00»). */
+  function usdtShort(q) {
+    var t = R.toFixedHE(q, 2);
+    if (/\.00$/.test(t)) t = t.slice(0, -3);
+    var parts = t.split('.');
+    return groupInt(parts[0]) + (parts[1] ? '.' + parts[1] : '');
+  }
+  /** База из адреса: «10 000», «12 345.67». */
+  function baseText() {
+    var parts = S.p.rb.split('.');
+    return groupInt(parts[0]) + (parts[1] ? '.' + parts[1] : '');
+  }
+  function riskLimitsText() {
+    var lim = R.riskLimitsUsdt(S.p.rb, S.rc);
+    return R.riskPctLabel(S.rc[0]) + '–' + R.riskPctLabel(S.rc[1]) + ' % базы ' + baseText() + ' = ' +
+      usdtShort(lim[0]) + '–' + usdtShort(lim[1]) + ' USDT';
+  }
+  /** Ошибка выбора риска для строки ошибок; пусто — выбор верен. */
+  function riskError() {
+    if (!S.rc) return '';
+    if (S.risk === null && S.riskText.trim() !== '' && !R.parseRiskInput(S.riskText)) {
+      return 'Сумма риска — цифры и точка, не больше двух знаков после точки (например, 150 или 49.5).';
+    }
+    if (S.risk === null || !R.riskInLimits(S.risk, S.p.rb, S.rc)) {
+      var lim = R.riskLimitsUsdt(S.p.rb, S.rc);
+      return 'Риск ' + R.riskPctLabel(S.rc[0]) + '–' + R.riskPctLabel(S.rc[1]) + ' % базы: ' +
+        usdtShort(lim[0]) + '–' + usdtShort(lim[1]) + ' USDT';
+    }
+    return '';
+  }
+  /** Параметры расчёта с выбранным риском вместо rk (адрес с rc и верный выбор). */
+  function instNow() {
+    if (!S.rc || riskError()) return S.inst;
+    var inst = {};
+    Object.keys(S.inst).forEach(function (k) { inst[k] = S.inst[k]; });
+    inst.rk = S.risk;
+    return inst;
+  }
+  function riskDirty() { return !!S.rc && !(S.risk !== null && R.eq(S.risk, S.riskDef)); }
+
+  /** Блок «Риск на сделку» (только режим g с rc): кнопки в пределах, отдельная кнопка риска по
+   *  умолчанию, если его нет среди кнопок, поле суммы, подпись пределов. */
+  function buildRisk() {
+    var box = $('risk');
+    box.textContent = '';
+    box.hidden = !S.rc;
+    if (!S.rc) return;
+    box.appendChild(el('div', 'risk-title', 'Риск на сделку'));
+    var row = el('div', 'risk-btns');
+    var btns = [];
+    var addBtn = function (usdt, pct) {
+      var b = el('button', 'btn', '');
+      b.type = 'button';
+      b.addEventListener('click', function () { pickRisk(usdt, pct); });
+      row.appendChild(b);
+      btns.push({ b: b, usdt: usdt, pct: pct });
+    };
+    var quick = R.riskQuick(S.p.rb, S.rc);
+    quick.forEach(function (x) { addBtn(R.riskFromPct(x, S.p.rb), R.riskPctLabel(x)); });
+    var defIn = quick.some(function (x) { return R.eq(R.riskFromPct(x, S.p.rb), S.riskDef); });
+    if (!defIn && R.riskInLimits(S.riskDef, S.p.rb, S.rc)) addBtn(S.riskDef, riskLabelOf(S.riskDef));
+    box.appendChild(row);
+    var field = el('label', 'risk-field');
+    var inp = document.createElement('input');
+    inp.type = 'text';
+    inp.setAttribute('inputmode', 'decimal');
+    inp.setAttribute('autocomplete', 'off');
+    inp.setAttribute('enterkeyhint', 'done');
+    inp.setAttribute('maxlength', '12');
+    inp.setAttribute('aria-label', 'Риск на сделку, сумма в USDT');
+    inp.placeholder = 'сумма';
+    inp.className = 'mono';
+    inp.addEventListener('input', function () { typeRisk(inp.value); });
+    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') inp.blur(); });
+    field.appendChild(inp);
+    field.appendChild(document.createTextNode(' USDT'));
+    box.appendChild(field);
+    box.appendChild(el('div', 'risk-note', riskLimitsText()));
+    S.riskUi = { btns: btns, inp: inp };
+    renderRisk();
+  }
+  function renderRisk() {
+    if (!S.riskUi) return;
+    S.riskUi.btns.forEach(function (x) {
+      var on = S.risk !== null && R.eq(S.risk, x.usdt);
+      x.b.textContent = x.pct + ' %' + (on ? ' ✓' : '');
+      x.b.classList.toggle('on', on);
+      x.b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      x.b.setAttribute('aria-label', 'Риск ' + x.pct + ' % — ' + usdtShort(x.usdt) + ' USDT');
+    });
+  }
+  function pickRisk(usdt, pct) {
+    S.riskBtn = { usdt: usdt, pct: pct };
+    S.riskText = '';
+    if (S.riskUi) S.riskUi.inp.value = '';
+    S.risk = usdt;
+    S.riskPct = pct;
+    haptic();
+    changed();
+    setStatus('Риск на сделку: ' + pct + ' % (' + fmtFixed(num(usdt), 2) + ' USDT) — объём пересчитан.');
+  }
+  function typeRisk(text) {
+    S.riskText = String(text || '');
+    if (S.riskText.trim() === '') {                  // поле очищено — снова последняя кнопка
+      S.risk = S.riskBtn.usdt;
+      S.riskPct = S.riskBtn.pct;
+    } else {
+      S.risk = R.parseRiskInput(S.riskText);
+      S.riskPct = S.risk === null ? '' : riskLabelOf(S.risk);
+    }
+    changed();
+  }
+
   function compute() {
     var p = S.p, d = S.d, tick = S.tick;
     var res = { errs: [], warns: [], infos: [], plan: null, pos: null, move: null, payload: null, set: null };
@@ -392,7 +527,9 @@
       R.lateLegs(d, S.cur, S.last).forEach(function (x) {
         if (!(S.legset && isAdded(x[0]))) res.warns.push(x[1]);   // у добавленной L1 — ошибка E_L1_PRICE
       });
-      res.plan = R.planForEdit(d, S.cur, S.inst);
+      var rErr = riskError();
+      if (rErr) res.errs.push(rErr);
+      res.plan = R.planForEdit(d, S.cur, instNow());
       if (!res.plan.ok && !res.errs.length) res.errs.push(res.plan.reason);
       if (S.legset) {
         res.set = { diff: R.legsDiff(S.bot, S.cur), hint: R.stopRuleHint(d, S.cur, S.bot, S.pip, tick) };
@@ -416,7 +553,9 @@
       res.pos = pc;
     }
     if (!S.last && S.firstLoadDone) res.warns.push('Нет текущей цены — по цене проверит бот.');
-    res.payload = R.buildPayload(p, finalLevels(), S.last, IN_TG ? TG.platform : 'unknown', Date.now(), S.mark);
+    res.payload = (S.rc && riskError()) ? null      // 18.4: риск неверен — «Готово» неактивна
+      : R.buildPayload(p, finalLevels(), S.last, IN_TG ? TG.platform : 'unknown', Date.now(), S.mark,
+        S.rc ? S.risk : null);
     return res;
   }
 
@@ -446,15 +585,16 @@
     if (res.move && res.move.moved.length) {
       t.move = 'Сдвиг заявок: ' + res.move.moved.map(function (k) {
         return (R.LEGS.indexOf(k) >= 0 ? k : SHORT[k]) + ' ' + px(S.bot[k]) + '→' + px(S.cur[k]);
-      }).join(', ') + (res.move.sized ? ' — объём пересчитан на 1 R' : ' — объём прежний') +
-        '; после сдвига заявки за уровнями бота не следят.';
+      }).join(', ') + (res.move.sized ? ' — объём пересчитан на риск сетки (' +
+        R.riskPctLabel(R.riskPctExact(S.inst.rk, S.inst.rb)) + ' % = ' + usdtShort(S.inst.rk) + ' USDT)'
+        : ' — объём прежний') + '; после сдвига заявки за уровнями бота не следят.';
     }
     if (S.move && S.mark) t.lock = 'Отмечена ' + S.mark + ' к снятию — линии не двигаются; снимите отметку, чтобы сдвигать.';
     if (res.set) {
       if (res.set.diff.length) {
-        t.set = 'Набор ног изменён: ' + res.set.diff.map(function (x) {
+        t.set = 'Набор заявок изменён: ' + res.set.diff.map(function (x) {
           return (x[0] === '-' ? 'убрана ' : 'добавлена ') + x.slice(1);
-        }).join(', ') + ' — риск 1 R делится на оставшиеся ноги.';
+        }).join(', ') + ' — риск сетки делится на оставшиеся заявки.';
       }
       if (!has(S.cur.L2) && has(S.bot.L2)) {
         t.noL2 = 'Без L2 сетка снимется при закрытии M5 ' + (S.d === 1 ? 'ниже' : 'выше') + ' 100 % (' +
@@ -488,6 +628,9 @@
         box.appendChild(el('div', 'main', 'По ' + qty + ' ' + S.coin + ' на заявку' + was + ' · риск ' +
           fmtFixed(num(pl.risk), 2) + ' USDT (' + fmtFixed(num(pl.risk) / rk, 2) + ' R; было ' +
           fmtFixed(num(res.move.riskOld) / rk, 2) + ' R) · номинал ' + fmtFixed(num(pl.notional), 0) + ' USDT'));
+      } else if (S.rc) {        // 18.4: «риск 49.94 USDT (0.5 % от 10 000)» — выбранный риск, % базы
+        box.appendChild(el('div', 'main', 'По ' + qty + ' ' + S.coin + ' на заявку · риск ' + fmtFixed(num(pl.risk), 2) +
+          ' USDT (' + S.riskPct + ' % от ' + baseText() + ') · номинал ' + fmtFixed(num(pl.notional), 0) + ' USDT'));
       } else {
         box.appendChild(el('div', 'main', 'По ' + qty + ' ' + S.coin + ' на заявку · риск ' + fmtFixed(num(pl.risk), 2) +
           ' USDT (' + fmtFixed(num(pl.risk) / rk, 2) + ' R) · номинал ' + fmtFixed(num(pl.notional), 0) + ' USDT'));
@@ -738,7 +881,7 @@
     stopRepeat();
     if (has(S.cur[k])) {
       var legs = R.legsOf(S.cur);
-      if (legs.length <= 1) { setStatus('Нужна хотя бы одна нога.'); return; }
+      if (legs.length <= 1) { setStatus('Нужна хотя бы одна заявка.'); return; }
       S.cur[k] = null;
       if (S.sel === k) {
         var i = legs.indexOf(k);
@@ -747,7 +890,7 @@
       haptic();
       buildList();
       changed();
-      setStatus(k + ' убрана — риск 1 R делится на оставшиеся ноги.');
+      setStatus(k + ' убрана — риск сетки делится на оставшиеся заявки.');
       return;
     }
     var r = R.addStart(S.d, k, S.cur, S.bot, S.imp, S.tick);
@@ -827,13 +970,15 @@
     changed();
   }
   function changed() {
-    var dirty = R.LINES.some(function (k) { return !sameQ(S.cur[k], S.start[k]); }) || S.mark !== S.startMark;
+    var dirty = R.LINES.some(function (k) { return !sameQ(S.cur[k], S.start[k]); }) || S.mark !== S.startMark ||
+      riskDirty();
     if (dirty !== S.dirty && IN_TG && ver('6.2')) {
       try { if (dirty) TG.enableClosingConfirmation(); else TG.disableClosingConfirmation(); } catch (e) { /* нет */ }
     }
     S.dirty = dirty;
     $('sendErr').hidden = true;
     renderList();
+    renderRisk();
     syncLines();
     recalc();
   }
