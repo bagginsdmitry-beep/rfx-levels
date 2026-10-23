@@ -1,11 +1,39 @@
-/* app.js — мини-приложение «Уровни» (SPEC_18 §4): график, перетаскивание линий, кнопки,
- * расчёт объёма и риска по правилу бота (rules.js), отправка боту через Telegram.WebApp.sendData.
+/* app.js — мини-приложение «Уровни» (SPEC_18 §4; SPEC_19 §3, §9): график, перетаскивание линий,
+ * кнопки, расчёт объёма и риска по правилу бота (rules.js), отправка боту через
+ * Telegram.WebApp.sendData.
+ *
+ * Версия 18.1: адрес v=2, режим сетки — полоса «Набор ног» (убрать / добавить / вернуть ногу);
+ * адрес v=2, режим позиции — «Снять» у ждущих заявок (одна за раз). Адрес v=1 — как 18.0.
+ *
+ * Версия 18.2 (SPEC_191 §7, §15.1): адрес v=3 — поставленная сетка без исполнений: ждущие заявки,
+ * стоп и цель двигаются, объём — на 1 R; снятие одной заявки — полосой «Снять Lk»; сдвиг и снятие
+ * в одной правке нельзя. В начале init() — проверка версии файлов (смесь 18.1 и 18.2 из кэша →
+ * «Страница обновляется»), боту в этом случае ничего не уходит.
  *
  * Сеть: только свечи с api.bybit.com (запасной — fapi.binance.com). Ничего не хранит в браузере
  * (ни хранилища, ни куки), никуда ничего не отправляет, кроме sendData в чат бота.
  */
-(function () {
+(function (root) {
   'use strict';
+
+  // ------------------------------------------------------------------ SPEC_191 §15.1: версия файлов
+  var APP_PAGE_VERSION = '18.2';
+  var GUARD_TEXT = 'Страница обновляется — закройте и откройте её через минуту.';
+  var REQUIRED_IDS = ['app', 'title', 'subtitle', 'banners', 'fatal', 'main', 'chartWrap', 'chart',
+    'chartMsg', 'src', 'refresh', 'tv', 'tvTicker', 'lines', 'legset', 'status', 'reset', 'calc',
+    'infos', 'errs', 'warns', 'pageButtons', 'cancelBtn', 'doneBtn', 'sendErr', 'tvAttr'];
+  /** Пусто — файлы одной версии; иначе текст для владельца. rules — window.LevelRules (или нет),
+   *  metaVer — <meta name="page-version"> (или null), hasId(id) — есть ли элемент страницы. */
+  function guardText(rules, metaVer, hasId) {
+    if (!rules || rules.PAGE_VERSION !== APP_PAGE_VERSION) return GUARD_TEXT;
+    if (metaVer !== APP_PAGE_VERSION) return GUARD_TEXT;
+    for (var i = 0; i < REQUIRED_IDS.length; i++) if (!hasId(REQUIRED_IDS[i])) return GUARD_TEXT;
+    return '';
+  }
+  root.AppGuard = { APP_PAGE_VERSION: APP_PAGE_VERSION, GUARD_TEXT: GUARD_TEXT,
+    REQUIRED_IDS: REQUIRED_IDS.slice(), guardText: guardText };
+  // Самопроверка (selftest.html с <meta name="selftest">, Deno без DOM) берёт только проверку версии.
+  if (typeof document === 'undefined' || document.querySelector('meta[name="selftest"]')) return;
 
   var R = window.LevelRules;
   var TG = (window.Telegram && window.Telegram.WebApp) || null;
@@ -17,17 +45,21 @@
   var HIT_PX = 16;
   var NAMES = { L1: 'L1', L2: 'L2', L3: 'L3', SL: 'Стоп', TP: 'Цель' };
   var SHORT = { L1: 'L1', L2: 'L2', L3: 'L3', SL: 'стоп', TP: 'цель' };
-  var MINUS = '−', NBSP = ' ';
+  var MINUS = '−', NBSP = ' ';
   var RX_PX = /^[0-9]{1,15}(\.[0-9]{1,20})?$/;
 
   var S = {
     p: null, d: 1, inst: null, tick: null, coin: '',
-    keys: [],            // линии, которые двигает владелец
-    cur: {}, start: {}, bot: {},
+    legset: false,       // режим сетки, адрес v=2: набор ног меняется
+    posV2: false,        // режим позиции, адрес v=2 или 3: снятие одной ждущей заявки
+    move: false,         // режим позиции, адрес v=3: ждущие заявки, стоп и цель двигаются (18.2)
+    cxBar: false,        // адрес v=3 и есть что снять: полоса «Снять Lk» под списком
+    cur: {}, start: {}, bot: {}, imp: null, pip: null,
+    mark: null, startMark: null,
     pq: null, pa: null, wq: [],
     sel: null,
     bars: [], src: null, last: null, m5: [], firstLoadDone: false, loading: false, loadFailed: false,
-    chart: null, series: null, plines: {}, slines: [], markersSet: false,
+    chart: null, series: null, plines: {}, markersSet: false,
     drag: null, sent: false, dirty: false, lastHaptic: 0, statusTimer: 0
   };
 
@@ -43,6 +75,8 @@
   }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function hhmm(ms) { var t = new Date(ms + MSK_MS); return pad(t.getUTCHours()) + ':' + pad(t.getUTCMinutes()); }
+  function has(x) { return x !== null && x !== undefined; }
+  function sameQ(a, b) { return has(a) ? (has(b) && R.eq(a, b)) : !has(b); }
 
   // ------------------------------------------------------------------ числа для показа
   function groupInt(s) { return s.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP); }
@@ -56,8 +90,9 @@
     var s = fmtFixed(x, k);
     return (x > 0 && Number(Math.abs(x).toFixed(k)) !== 0) ? '+' + s : s;
   }
-  function px(v) { return v === null ? '-' : R.fmtPrice(v, S.tick); }
+  function px(v) { return has(v) ? R.fmtPrice(v, S.tick) : '-'; }
   function num(q) { return R.toNum(q); }
+  function pqZero() { return !!S.pq && R.cmp(S.pq, R.ZERO) === 0; }
 
   // ------------------------------------------------------------------ Telegram
   function tgInit() {
@@ -85,8 +120,10 @@
     if (TG && ver('6.2')) { try { TG.disableClosingConfirmation(); } catch (e) { /* нет */ } }
     if (IN_TG) TG.close(); else window.close();
   }
+  /** Надпись кнопки нижней клавиатуры, которой открыта страница. */
   function buttonLabel() {
-    return (S.p.m === 'g' ? 'Уровни №' : 'Стоп/цель №') + S.p.c + ' ' + S.coin;
+    var w = S.p.m === 'g' ? 'Уровни №' : (S.posV2 && pqZero() ? 'Заявки №' : 'Стоп/цель №');
+    return w + S.p.c + ' ' + S.coin;
   }
 
   // ------------------------------------------------------------------ тема
@@ -118,10 +155,13 @@
 
   // ------------------------------------------------------------------ старт
   function fatal(text) {
-    $('fatal').textContent = text;
-    $('fatal').hidden = false;
-    $('main').hidden = true;
-    if (IN_TG) { try { TG.MainButton.hide(); } catch (e) { /* нет */ } }
+    var f = $('fatal'), m = $('main');
+    if (f) { f.textContent = text; f.hidden = false; } else if (document.body) { document.body.textContent = text; }
+    if (m) m.hidden = true;
+    if (IN_TG) {
+      try { TG.MainButton.hide(); } catch (e) { /* нет */ }
+      try { if (TG.SecondaryButton) TG.SecondaryButton.hide(); } catch (e) { /* нет */ }
+    }
   }
   function banner(text, kind) {
     var b = el('div', 'banner' + (kind ? ' ' + kind : ''), text);
@@ -132,6 +172,9 @@
   function init() {
     tgInit();
     document.documentElement.setAttribute('data-scheme', isDark() ? 'dark' : 'light');
+    var meta = document.querySelector('meta[name="page-version"]');
+    var guard = guardText(R, meta ? meta.getAttribute('content') : null, function (id) { return !!$(id); });
+    if (guard) { fatal(guard); return; }               // смесь файлов разных версий — боту ничего
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
       if (mq.addEventListener) mq.addEventListener('change', function () { if (!IN_TG) applyTheme(); });
@@ -145,38 +188,61 @@
     S.inst = R.instOf(p);
     S.tick = S.inst.tk;
     S.coin = p.s.replace(/USDT$/, '') || p.s;
+    S.pip = R.decOrNull(p.pp);
 
     var lvB = R.levelsOf(p.b), lvO = R.levelsOf(p.o);
     S.bot = lvB;
     if (p.m === 'g') {
-      S.keys = R.LINES.filter(function (k) { return lvO[k] !== null; });
-      S.keys.forEach(function (k) { S.cur[k] = lvO[k]; });
-      S.sel = 'L2';
+      S.legset = p.v === 2;
+      S.imp = R.decOrNull(p.im);
+      R.LINES.forEach(function (k) { S.cur[k] = lvO[k]; });
+      S.sel = R.legsOf(S.cur)[0] || 'SL';               // первая нога, что есть
     } else {
-      S.keys = ['SL', 'TP'];
-      S.cur = { L1: null, L2: null, L3: null, SL: lvB.SL, TP: lvB.TP };
+      S.posV2 = p.v >= 2;
+      S.move = p.v === 3;
+      S.cxBar = S.move && p.cx.length > 0;
       S.pq = R.dec(p.pq);
-      S.pa = R.dec(p.pa);
+      S.pa = R.decOrNull(p.pa);
       S.wq = R.waitingQP(p);
-      S.sel = 'SL';
+      if (S.posV2) {
+        R.LEGS.forEach(function (k, j) { if (p.o[j] === null && p.b[j] !== null) S.mark = k; });
+      }
+      if (S.move) {      // ждущие ноги — линии; o — черновик сдвига (или «-» у отмеченной ноги)
+        R.LINES.forEach(function (k) { S.cur[k] = has(lvO[k]) ? lvO[k] : lvB[k]; });
+      } else {
+        S.cur = { L1: null, L2: null, L3: null, SL: lvO.SL, TP: lvO.TP };   // o — черновик «Ещё изменить»
+      }
+      S.startMark = S.mark;
+      S.sel = S.move ? (movable()[0] || null) : (movable().length ? 'SL' : null);
     }
-    S.keys.forEach(function (k) { S.start[k] = S.cur[k]; });
+    R.LINES.forEach(function (k) { S.start[k] = S.cur[k]; });
 
     var side = p.d === 1 ? 'ЛОНГ' : 'ШОРТ';
     $('title').textContent = '№' + p.c + ' ' + p.s + ' ' + side;
-    $('subtitle').textContent = p.m === 'g' ? 'правка уровней до «Беру»' : 'стоп и цель открытой позиции';
-    document.title = (p.m === 'g' ? 'Уровни №' : 'Стоп/цель №') + p.c + ' ' + S.coin;
+    $('subtitle').textContent = p.m === 'g' ? 'правка уровней до «Беру»'
+      : (!S.posV2 ? 'стоп и цель открытой позиции'
+        : (S.move ? 'ждущие заявки — исполнений нет'
+          : (pqZero() ? 'ждущие заявки — позиции нет' : 'стоп, цель и ждущие заявки')));
+    document.title = buttonLabel();
+    $('reset').textContent = p.m === 'g' ? 'Вернуть уровни бота' : 'Вернуть как было';
 
     // rv — уже момент, на который посчитаны уровни бота (закрытие бара; CHANGES_18.md, отклонение 1);
     // +5 минут давали «на 17:45» при «17:40» у бота (аудит 1.8, замечание 2).
     var revAt = p.rv;
     banner('Уровни бота на ' + hhmm(revAt) + ' МСК');
+    if (S.move) banner('Цены заявок — на момент кнопки; бот сверит с биржей.');
     if (p.e > 0) banner('Стартовые уровни — ваша правка №' + p.e + '.');
-    if (p.pv !== R.PAGE_VERSION) banner('Страница обновилась, закройте и откройте снова.', 'warn');
+    if (R.KNOWN_PAGE_VERSIONS.indexOf(p.pv) < 0) banner('Страница обновилась, закройте и откройте снова.', 'warn');
     if (!IN_TG) banner('Откройте из Telegram — здесь можно только посмотреть.', 'warn');
-    S.expiredBanner = banner('Подсказка уже неактуальна (после 23:00) — правку бот не примет.', 'err');
+    S.expiredBanner = banner(S.move ? 'Заявки после 23:00 сняты — правку бот не примет.'
+      : 'Подсказка уже неактуальна (после 23:00) — правку бот не примет.', 'err');
     S.expiredBanner.hidden = true;
     if (!LWC) banner('График не загрузился — двигайте линии кнопками.', 'warn');
+    S.dyn = {};                                        // полосы, зависящие от правки
+    ['set', 'noL2', 'move', 'mark', 'lock', 'hint'].forEach(function (id) {
+      S.dyn[id] = banner('', id === 'hint' ? '' : 'note');
+      S.dyn[id].hidden = true;
+    });
 
     $('main').hidden = false;
     setupButtons();
@@ -193,6 +259,17 @@
     });
     setInterval(updateButtons, 30000);  // срок 23:00
   }
+
+  /** Линии, которые двигает владелец. */
+  function movable() {
+    if (!S.p) return [];
+    if (S.p.m === 'g') return R.LINES.filter(function (k) { return has(S.cur[k]); });
+    if (S.move) return S.mark ? [] : R.LINES.filter(function (k) { return has(S.cur[k]); });  // отметка — линии стоят
+    return (S.p.v === 1 || S.p.mv === 1) ? ['SL', 'TP'] : [];
+  }
+  /** Адрес v=3: сдвинутые линии (против цен заявок b). */
+  function movedNow() { return S.move ? R.movedLines(S.bot, S.cur) : []; }
+  function isAdded(k) { return R.LEGS.indexOf(k) >= 0 && has(S.cur[k]) && !has(S.bot[k]); }
 
   // ------------------------------------------------------------------ кнопки внизу
   function setupButtons() {
@@ -212,18 +289,34 @@
     $('doneBtn').addEventListener('click', send);
     $('cancelBtn').addEventListener('click', closeApp);
     $('refresh').addEventListener('click', function () { loadBars(false, true); });
-    $('reset').addEventListener('click', function () {
-      S.keys.forEach(function (k) { S.cur[k] = S.bot[k]; });
-      setStatus('Уровни бота возвращены.');
-      changed();
-    });
+    $('reset').addEventListener('click', reset);
     $('tv').addEventListener('click', openTradingView);
+  }
+  function reset() {
+    if (S.p.m === 'g') {
+      var setChanged = R.legsDiff(S.bot, S.cur).length > 0;
+      R.LINES.forEach(function (k) { S.cur[k] = S.bot[k]; });
+      if (!has(S.cur[S.sel])) S.sel = R.legsOf(S.cur)[0];
+      if (setChanged) buildList();
+      setStatus('Уровни бота возвращены.');
+    } else if (S.move) {
+      R.LINES.forEach(function (k) { S.cur[k] = S.bot[k]; });
+      S.mark = null;
+      if (!S.sel) S.sel = movable()[0] || null;
+      setStatus('Всё как было: заявки, стоп и цель.');
+    } else {
+      S.cur.SL = S.bot.SL;
+      S.cur.TP = S.bot.TP;
+      S.mark = null;
+      setStatus('Всё как было: стоп, цель и заявки.');
+    }
+    changed();
   }
 
   function canSend(res) {
     return IN_TG && !S.sent && S.firstLoadDone && !expired() && !!res.payload;
   }
-  function expired() { return S.p.m === 'g' && Date.now() > S.p.ex; }
+  function expired() { return (S.p.m === 'g' || S.move) && Date.now() > S.p.ex; }
 
   function updateButtons(res) {
     if (!S.p) return;
@@ -285,30 +378,45 @@
   }
 
   // ------------------------------------------------------------------ расчёт
-  function finalLevels() { return R.LINES.map(function (k) { return S.cur[k] === undefined ? null : S.cur[k]; }); }
+  function finalLevels() { return R.LINES.map(function (k) { return has(S.cur[k]) ? S.cur[k] : null; }); }
 
   function compute() {
     var p = S.p, d = S.d, tick = S.tick;
-    var res = { errs: [], warns: [], infos: [], plan: null, pos: null, payload: null };
+    var res = { errs: [], warns: [], infos: [], plan: null, pos: null, move: null, payload: null, set: null };
     if (p.m === 'g') {
       var ref = S.last || S.bot.L2;
       res.errs = R.checkOrder(d, S.cur, tick, ref).map(function (x) { return x[1]; });
-      R.lateLegs(d, S.cur, S.last).forEach(function (x) { res.warns.push(x[1]); });
+      if (S.legset) {
+        R.checkAddedL1(d, S.cur, S.bot, S.imp, S.last, tick).forEach(function (x) { res.errs.push(x[1]); });
+      }
+      R.lateLegs(d, S.cur, S.last).forEach(function (x) {
+        if (!(S.legset && isAdded(x[0]))) res.warns.push(x[1]);   // у добавленной L1 — ошибка E_L1_PRICE
+      });
       res.plan = R.planForEdit(d, S.cur, S.inst);
       if (!res.plan.ok && !res.errs.length) res.errs.push(res.plan.reason);
+      if (S.legset) {
+        res.set = { diff: R.legsDiff(S.bot, S.cur), hint: R.stopRuleHint(d, S.cur, S.bot, S.pip, tick) };
+      }
+    } else if (S.move && !S.mark) {                      // адрес v=3: сдвиг заявок
+      var cm = R.checkMove(p, S.cur, S.last);
+      cm.errs.forEach(function (x) {
+        if (x[0] !== 'E_NO_CHANGE') { res.errs.push(x[1]); return; }
+        res.infos.push(p.cx.length ? 'Сдвиньте линию или отметьте заявку для снятия.' : 'Сдвиньте линию.');
+      });
+      res.move = cm;
     } else {
-      var wp = S.wq.map(function (x) { return x[1]; });
-      R.checkPosition(d, S.cur.SL, S.cur.TP, S.last, S.pa, S.pq, wp, tick, S.bot.SL, S.bot.TP)
-        .forEach(function (x) {
-          if (x[0] === 'E_NO_CHANGE') res.infos.push('Сдвиньте стоп или цель — пока всё как у бота.');
-          else res.errs.push(x[1]);
-        });
-      res.pos = { risk: R.positionRisk(d, S.pq, S.pa, S.wq, S.cur.SL),
-        riskOld: R.positionRisk(d, S.pq, S.pa, S.wq, S.bot.SL),
-        profit: R.positionProfit(d, S.pq, S.pa, S.wq, S.cur.TP) };
+      var pc = R.posCheck(p, S.cur.SL, S.cur.TP, S.mark, S.last);
+      if (S.move && movedNow().length) res.errs.push('сдвиг и снятие в одной правке нельзя — верните линии или снимите отметку');
+      pc.errs.forEach(function (x) {
+        if (x[0] !== 'E_NO_CHANGE') { res.errs.push(x[1]); return; }
+        if (!S.posV2) res.infos.push('Сдвиньте стоп или цель — пока всё как сейчас.');
+        else res.infos.push(p.mv === 1 ? 'Сдвиньте стоп или цель или отметьте заявку для снятия.'
+          : 'Отметьте заявку для снятия.');
+      });
+      res.pos = pc;
     }
     if (!S.last && S.firstLoadDone) res.warns.push('Нет текущей цены — по цене проверит бот.');
-    res.payload = R.buildPayload(p, finalLevels(), S.last, IN_TG ? TG.platform : 'unknown', Date.now());
+    res.payload = R.buildPayload(p, finalLevels(), S.last, IN_TG ? TG.platform : 'unknown', Date.now(), S.mark);
     return res;
   }
 
@@ -316,6 +424,7 @@
     var res = compute();
     S.res = res;
     renderCalc(res);
+    renderDyn(res);
     fill('errs', res.errs);
     fill('warns', res.warns);
     fill('infos', res.infos);
@@ -326,18 +435,63 @@
     ul.textContent = '';
     items.forEach(function (t) { ul.appendChild(el('li', '', t)); });
   }
+  function hintText(h) {
+    return 'Стоп ваш; по правилу бота для ' + h.leg + ' (' + (S.d === 1 ? MINUS : '+') + R.STOP_BUF_PIPS +
+      ' пипсов) он был бы ' + px(h.price) + '.';
+  }
+  /** Полосы сверху, зависящие от правки: набор ног, «без L2», отметка снятия, строка о стопе. */
+  function renderDyn(res) {
+    if (!S.dyn) return;
+    var t = { set: '', noL2: '', move: '', mark: '', lock: '', hint: '' };
+    if (res.move && res.move.moved.length) {
+      t.move = 'Сдвиг заявок: ' + res.move.moved.map(function (k) {
+        return (R.LEGS.indexOf(k) >= 0 ? k : SHORT[k]) + ' ' + px(S.bot[k]) + '→' + px(S.cur[k]);
+      }).join(', ') + (res.move.sized ? ' — объём пересчитан на 1 R' : ' — объём прежний') +
+        '; после сдвига заявки за уровнями бота не следят.';
+    }
+    if (S.move && S.mark) t.lock = 'Отмечена ' + S.mark + ' к снятию — линии не двигаются; снимите отметку, чтобы сдвигать.';
+    if (res.set) {
+      if (res.set.diff.length) {
+        t.set = 'Набор ног изменён: ' + res.set.diff.map(function (x) {
+          return (x[0] === '-' ? 'убрана ' : 'добавлена ') + x.slice(1);
+        }).join(', ') + ' — риск 1 R делится на оставшиеся ноги.';
+      }
+      if (!has(S.cur.L2) && has(S.bot.L2)) {
+        t.noL2 = 'Без L2 сетка снимется при закрытии M5 ' + (S.d === 1 ? 'ниже' : 'выше') + ' 100 % (' +
+          px(S.bot.L2) + '), если входа ещё не было.';
+      }
+      if (res.set.hint) t.hint = hintText(res.set.hint);
+    }
+    if (res.pos && S.mark) {
+      var w = S.wq.filter(function (x) { return x[2] === S.mark; })[0];
+      t.mark = 'Будет снята ' + S.mark + (w ? ' ' + px(w[1]) + ' × ' + S.p.q : '') + ' — ' +
+        (pqZero() ? 'остальные заявки, стоп и цель остаются.' : 'исполненная часть, стоп и цель остаются.');
+      if (res.pos.hint) t.hint = hintText(res.pos.hint);
+    }
+    Object.keys(t).forEach(function (id) {
+      S.dyn[id].textContent = t[id];
+      S.dyn[id].hidden = !t[id];
+    });
+  }
 
   function renderCalc(res) {
     var box = $('calc');
     box.textContent = '';
     var rk = num(S.inst.rk);
     if (res.errs.length) return;                      // при ошибках расчёт не показывается
-    if (S.p.m === 'g') {
-      var pl = res.plan;
+    if (S.p.m === 'g' || res.move) {
+      var pl = S.p.m === 'g' ? res.plan : res.move.view;
       if (!pl || !pl.ok) return;
       var qty = R.fmtQty(pl.qty, S.inst.qs);
-      box.appendChild(el('div', 'main', 'По ' + qty + ' ' + S.coin + ' на заявку · риск ' + fmtFixed(num(pl.risk), 2) +
-        ' USDT (' + fmtFixed(num(pl.risk) / rk, 2) + ' R) · номинал ' + fmtFixed(num(pl.notional), 0) + ' USDT'));
+      if (res.move) {           // v=3: «По 45.4 SOL на заявку (было 38.3) · риск … (1.00 R; было 1.00 R)»
+        var was = res.move.sized ? ' (было ' + R.fmtQty(R.dec(S.p.q), S.inst.qs) + ')' : '';
+        box.appendChild(el('div', 'main', 'По ' + qty + ' ' + S.coin + ' на заявку' + was + ' · риск ' +
+          fmtFixed(num(pl.risk), 2) + ' USDT (' + fmtFixed(num(pl.risk) / rk, 2) + ' R; было ' +
+          fmtFixed(num(res.move.riskOld) / rk, 2) + ' R) · номинал ' + fmtFixed(num(pl.notional), 0) + ' USDT'));
+      } else {
+        box.appendChild(el('div', 'main', 'По ' + qty + ' ' + S.coin + ' на заявку · риск ' + fmtFixed(num(pl.risk), 2) +
+          ' USDT (' + fmtFixed(num(pl.risk) / rk, 2) + ' R) · номинал ' + fmtFixed(num(pl.notional), 0) + ' USDT'));
+      }
       var n = pl.legs.length, rp = pl.rp;
       var line;
       if (n === 1) {
@@ -353,9 +507,12 @@
       if (pl.bumped) box.appendChild(el('div', '', 'Объём поднят до минимального лота.'));
     } else {
       var ps = res.pos, r = num(ps.risk) / rk, r0 = num(ps.riskOld) / rk;
-      var waits = S.p.w.map(function (x) { return x[0] + ' ' + R.fmtPrice(R.dec(x[1]), S.tick); }).join(', ');
-      box.appendChild(el('div', '', 'Позиция ' + S.p.pq + ' ' + S.coin + ', средняя ' + S.p.pa +
-        (waits ? ' · ждут: ' + waits : '')));
+      var rest = S.wq.filter(function (x) { return x[2] !== S.mark; });
+      var waits = rest.map(function (x) { return x[2] + ' ' + px(x[1]); }).join(', ');
+      var head = pqZero() ? 'Позиции нет' : 'Позиция ' + S.p.pq + ' ' + S.coin + ', средняя ' + S.p.pa;
+      var tail = S.mark ? (waits ? ' · после снятия ждут: ' + waits : ' · после снятия заявок нет')
+        : (waits ? ' · ждут: ' + waits : '');
+      box.appendChild(el('div', '', head + tail));
       box.appendChild(el('div', 'main', r > 0
         ? 'Риск до стопа ' + fmtFixed(r, 2) + ' R (было ' + fmtFixed(r0, 2) + ' R)'
         : 'Стоп в плюсе: ' + fmtSigned(-r, 2) + ' R (было риск ' + fmtFixed(r0, 2) + ' R)'));
@@ -364,45 +521,64 @@
   }
 
   // ------------------------------------------------------------------ список линий
-  /** Строки строятся один раз (кнопки не пересоздаются — удержание ▲▼ не обрывается),
-   *  дальше renderList только обновляет текст, выделение и доступность кнопок M5. */
+  /** Строки строятся заново только при смене набора ног (кнопки не пересоздаются при каждом шаге —
+   *  удержание ▲▼ не обрывается); renderList обновляет текст, выделение и доступность кнопок. */
   function buildList() {
     var box = $('lines');
     box.textContent = '';
     S.rows = {};
-    S.keys.forEach(function (k) {
-      var row = el('div', 'row');
-      var name = el('button', 'name');
-      name.type = 'button';
-      var dot = el('span', 'dot');
-      name.appendChild(dot);
-      name.appendChild(document.createTextNode(NAMES[k]));
-      name.setAttribute('aria-label', 'Выбрать линию ' + NAMES[k]);
-      name.addEventListener('click', function () { select(k); });
-      var val = el('div', 'val');
-      var price = el('span', 'price mono');
-      var bot = el('span', 'bot');
-      val.appendChild(price);
-      val.appendChild(bot);
-      var btns = el('div', 'btns');
-      var m5dn = stepBtn('⤓', NAMES[k] + ' к уровню M5 ниже', function () { jump(k, false); }, false);
-      var m5up = stepBtn('⤒', NAMES[k] + ' к уровню M5 выше', function () { jump(k, true); }, false);
-      btns.appendChild(stepBtn('▼', NAMES[k] + ' на шаг ниже', function () { nudge(k, -1); }, true));
-      btns.appendChild(stepBtn('▲', NAMES[k] + ' на шаг выше', function () { nudge(k, 1); }, true));
-      btns.appendChild(m5dn);
-      btns.appendChild(m5up);
-      row.appendChild(name);
-      row.appendChild(val);
-      row.appendChild(btns);
-      box.appendChild(row);
-      S.rows[k] = { row: row, dot: dot, price: price, bot: bot, m5: [m5dn, m5up] };
+    var mv = movable();
+    var order = S.p.m === 'g' ? (S.legset ? R.LINES : R.LINES.filter(function (k) { return has(S.start[k]); }))
+      : (S.move ? R.LINES : ['SL', 'TP']);
+    order.forEach(function (k) {
+      if (S.move ? has(S.bot[k]) : mv.indexOf(k) >= 0) lineRow(box, k);   // v=3: при отметке строки есть, кнопки неактивны
+      else S.rows[k] = offRow(box, k);
     });
-    if (S.p.m === 'p') {
+    if (S.p.m === 'p' && !S.move) {
       S.p.w.forEach(function (x) {
-        S.rows['wait:' + x[0]] = staticRow(box, x[0] + ' ждёт', R.fmtPrice(R.dec(x[1]), S.tick), 'blue');
+        S.rows['wait:' + x[0]] = S.posV2 ? waitRow(box, x[0], R.dec(x[1])) : staticRow(box, x[0] + ' ждёт', px(R.dec(x[1])), 'blue');
       });
-      S.rows.avg = staticRow(box, 'Средняя', S.p.pa, 'gray');
+      if (S.pa && !pqZero()) S.rows.avg = staticRow(box, 'Средняя', S.p.pa, 'gray');
     }
+    buildLegset();
+  }
+  function lineRow(box, k) {
+    var row = el('div', 'row');
+    var name = el('button', 'name');
+    name.type = 'button';
+    var dot = el('span', 'dot');
+    name.appendChild(dot);
+    name.appendChild(document.createTextNode(NAMES[k]));
+    name.setAttribute('aria-label', 'Выбрать линию ' + NAMES[k]);
+    name.addEventListener('click', function () { select(k); });
+    var val = el('div', 'val');
+    var price = el('span', 'price mono');
+    var bot = el('span', 'bot');
+    val.appendChild(price);
+    val.appendChild(bot);
+    var btns = el('div', 'btns');
+    var m5dn = stepBtn('⤓', NAMES[k] + ' к уровню M5 ниже', function () { jump(k, false); }, false);
+    var m5up = stepBtn('⤒', NAMES[k] + ' к уровню M5 выше', function () { jump(k, true); }, false);
+    var dn = stepBtn('▼', NAMES[k] + ' на шаг ниже', function () { nudge(k, -1); }, true);
+    var up = stepBtn('▲', NAMES[k] + ' на шаг выше', function () { nudge(k, 1); }, true);
+    btns.appendChild(dn);
+    btns.appendChild(up);
+    btns.appendChild(m5dn);
+    btns.appendChild(m5up);
+    row.appendChild(name);
+    row.appendChild(val);
+    row.appendChild(btns);
+    box.appendChild(row);
+    S.rows[k] = { kind: 'line', row: row, dot: dot, price: price, bot: bot, m5: [m5dn, m5up], steps: [dn, up] };
+  }
+  /** Серая строка без кнопок шага: нога, которой нет (режим сетки v2), или стоп/цель позиции,
+   *  которые нельзя двигать (режим позиции v2, mv = 0). */
+  function offRow(box, k) {
+    var r = staticRow(box, NAMES[k], '', k === 'SL' ? 'red' : (k === 'TP' ? 'green' : 'gray'));
+    r.row.className = 'row static off';
+    r.kind = 'off';
+    r.key = k;
+    return r;
   }
   function staticRow(box, name, value, colorKey) {
     var row = el('div', 'row static');
@@ -411,36 +587,81 @@
     n.appendChild(dot);
     n.appendChild(document.createTextNode(name));
     var v = el('div', 'val');
-    v.appendChild(el('span', 'price mono', value));
+    var price = el('span', 'price mono', value);
+    var note = el('span', 'bot');
+    v.appendChild(price);
+    v.appendChild(note);
     row.appendChild(n);
     row.appendChild(v);
     box.appendChild(row);
-    return { row: row, dot: dot, colorKey: colorKey };
+    return { kind: 'static', row: row, dot: dot, price: price, bot: note, colorKey: colorKey };
+  }
+  /** Ждущая заявка позиции (адрес v=2): «Снять» / «Не снимать» у ног из cx. */
+  function waitRow(box, leg, price) {
+    var r = staticRow(box, leg, px(price), 'blue');
+    r.kind = 'wait';
+    r.leg = leg;
+    r.row.className = 'row static wait';
+    if (S.p.cx.indexOf(leg) >= 0) {
+      var b = el('button', 'btn cancel', 'Снять');
+      b.type = 'button';
+      b.addEventListener('click', function () { markAction(leg); });
+      r.row.appendChild(b);
+      r.btn = b;
+    }
+    return r;
   }
   function renderList() {
     if (!S.p || !S.rows) return;
     var c = colors();
-    S.keys.forEach(function (k) {
-      var r = S.rows[k];
-      r.row.className = 'row' + (k === S.sel ? ' sel' : '');
-      r.row.style.setProperty('--sel', lineColor(k, c));
-      r.dot.style.background = lineColor(k, c);
-      r.price.textContent = px(S.cur[k]);
-      r.bot.textContent = botNote(k);
-      r.m5.forEach(function (b) { b.disabled = !S.m5.length; });
-    });
     Object.keys(S.rows).forEach(function (id) {
       var r = S.rows[id];
-      if (r.colorKey) r.dot.style.background = c[r.colorKey];
+      if (r.kind === 'line') {
+        var k = id;
+        var canMove = movable().indexOf(k) >= 0;
+        var marked = S.move && S.mark === k;
+        r.row.className = 'row' + (k === S.sel ? ' sel' : '') + (marked ? ' off' : '');
+        r.row.style.setProperty('--sel', lineColor(k, c));
+        r.dot.style.background = marked ? c.gray : lineColor(k, c);
+        r.price.textContent = px(S.cur[k]);
+        r.bot.textContent = marked ? 'снимется' : botNote(k);
+        r.steps.forEach(function (b) { b.disabled = !canMove; });
+        r.m5.forEach(function (b) { b.disabled = !canMove || !S.m5.length; });
+      } else if (r.kind === 'off') {
+        r.dot.style.background = c[r.colorKey];
+        if (R.LEGS.indexOf(r.key) >= 0) {
+          r.price.textContent = '—';
+          r.bot.textContent = S.move ? 'нет заявки' : (has(S.bot[r.key]) ? 'убрана · бот ' + px(S.bot[r.key]) : 'нет');
+        } else {
+          r.price.textContent = px(S.cur[r.key]);
+          r.bot.textContent = pqZero() ? 'без позиции не переносятся' : 'перенос стопа и цели выключен';
+        }
+      } else if (r.kind === 'wait') {
+        var marked = S.mark === r.leg;
+        r.row.className = 'row static wait' + (marked ? ' off' : '');
+        r.dot.style.background = marked ? c.gray : c.blue;
+        r.bot.textContent = marked ? 'снимется' : (r.btn ? 'ждёт' : 'снять нельзя: частично исполнена или не подтверждена');
+        if (r.btn) {
+          r.btn.textContent = marked ? 'Не снимать' : 'Снять';
+          r.btn.classList.toggle('dim', !marked && lastLegLock(r.leg));
+          r.btn.setAttribute('aria-label', (marked ? 'Не снимать заявку ' : 'Снять заявку ') + r.leg);
+        }
+      } else if (r.colorKey) {
+        r.dot.style.background = c[r.colorKey];
+      }
     });
+    renderLegset();
   }
   function botNote(k) {
     var b = S.bot[k], v = S.cur[k];
-    if (b === null || b === undefined) return '';
+    if (!has(b)) return (S.legset && R.LEGS.indexOf(k) >= 0) ? 'добавлена — у бота не было' : '';
+    if (S.p.m === 'p') return R.eq(b, v) ? 'как сейчас' : 'сейчас ' + px(b) + ', ' + stepsTxt(v, b);
     if (R.eq(b, v)) return 'как у бота';
-    var steps = num(R.div(R.sub(v, b), S.tick));
-    var st = Math.round(steps);
-    return 'бот ' + px(b) + ', ' + (st > 0 ? '+' : MINUS) + Math.abs(st) + ' ' + plural(Math.abs(st), 'шаг', 'шага', 'шагов');
+    return 'бот ' + px(b) + ', ' + stepsTxt(v, b);
+  }
+  function stepsTxt(v, b) {
+    var st = Math.round(num(R.div(R.sub(v, b), S.tick)));
+    return (st > 0 ? '+' : MINUS) + Math.abs(st) + ' ' + plural(Math.abs(st), 'шаг', 'шага', 'шагов');
   }
   function plural(n, a, b, c) {
     var m10 = n % 10, m100 = n % 100;
@@ -466,6 +687,109 @@
     return b;
   }
 
+  // ------------------------------------------------------------------ набор ног (режим сетки, v=2)
+  function buildLegset() {
+    var box = $('legset');
+    box.textContent = '';
+    S.setBtns = {};
+    box.hidden = !S.legset && !S.cxBar;
+    if (S.cxBar) {                 // адрес v=3: «Снять Lk» у ног из cx — полосой под списком
+      S.p.cx.forEach(function (k) {
+        var b = el('button', 'btn', '');
+        b.type = 'button';
+        b.addEventListener('click', function () { markAction(k); });
+        box.appendChild(b);
+        S.setBtns[k] = b;
+      });
+      return;
+    }
+    if (!S.legset) return;
+    R.LEGS.forEach(function (k) {
+      var b = el('button', 'btn', '');
+      b.type = 'button';
+      b.addEventListener('click', function () { legAction(k); });
+      box.appendChild(b);
+      S.setBtns[k] = b;
+    });
+  }
+  function renderLegset() {
+    if (S.cxBar && S.setBtns) {
+      var moved = movedNow().length > 0;
+      S.p.cx.forEach(function (k) {
+        var b = S.setBtns[k], marked = S.mark === k;
+        var t = marked ? 'Оставить ' + k : 'Снять ' + k;
+        b.textContent = t;
+        b.setAttribute('aria-label', marked ? 'Не снимать заявку ' + k : 'Снять заявку ' + k);
+        b.classList.toggle('dim', !marked && (moved || lastLegLock(k)));
+      });
+      return;
+    }
+    if (!S.legset || !S.setBtns) return;
+    var n = R.legsOf(S.cur).length;
+    R.LEGS.forEach(function (k) {
+      var b = S.setBtns[k];
+      var t = has(S.cur[k]) ? 'Убрать ' + k : (has(S.bot[k]) ? 'Вернуть ' + k : 'Добавить ' + k);
+      b.textContent = t;
+      b.setAttribute('aria-label', t);
+      b.classList.toggle('dim', has(S.cur[k]) && n <= 1);       // последнюю ногу не убрать
+    });
+  }
+  function legAction(k) {
+    stopRepeat();
+    if (has(S.cur[k])) {
+      var legs = R.legsOf(S.cur);
+      if (legs.length <= 1) { setStatus('Нужна хотя бы одна нога.'); return; }
+      S.cur[k] = null;
+      if (S.sel === k) {
+        var i = legs.indexOf(k);
+        S.sel = legs[i + 1] || legs[i - 1];                  // соседняя нога
+      }
+      haptic();
+      buildList();
+      changed();
+      setStatus(k + ' убрана — риск 1 R делится на оставшиеся ноги.');
+      return;
+    }
+    var r = R.addStart(S.d, k, S.cur, S.bot, S.imp, S.tick);
+    if (r[0] === null) { setStatus(r[1].charAt(0).toUpperCase() + r[1].slice(1) + '.'); return; }
+    S.cur[k] = r[0];
+    S.sel = k;
+    haptic();
+    buildList();
+    changed();
+    setStatus(k + (has(S.bot[k]) ? ' возвращена: ' : ' добавлена: ') + px(r[0]) + ' — двигайте ▲▼.');
+  }
+
+  // ------------------------------------------------------------------ снять заявку (режим позиции, v=2)
+  /** У сетки без позиции с двумя ждущими заявками после отметки одной вторая — последняя. */
+  function lastLegLock(k) {
+    return !!S.mark && S.mark !== k && pqZero() && S.p.w.length <= 2;
+  }
+  function markAction(k) {
+    if (S.move) {                  // адрес v=3: сдвиг или снятие — что-то одно (rules.moveExcl)
+      var ex = R.moveExcl(S.p, S.cur, S.mark, ['mark', k]);
+      if (ex.length) {
+        var t = ex[0][1];
+        setStatus(ex[0][0] === 'E_EXCL_MOVED' ? t.charAt(0).toUpperCase() + t.slice(1) + '.' : 'Нельзя: ' + t + '.');
+        return;
+      }
+    }
+    if (S.mark === k) {
+      S.mark = null;
+      setStatus(k + ' не снимается.');
+      if (S.move && !S.sel) S.sel = movable()[0] || null;
+    } else {
+      if (lastLegLock(k)) { setStatus('Нельзя: это последняя заявка, позиции нет.'); return; }
+      var errs = R.checkLegCancel(S.p, k);
+      if (errs.length) { setStatus('Нельзя: ' + errs[0][1] + '.'); return; }
+      var prev = S.mark;
+      S.mark = k;
+      setStatus(prev ? 'Снимется ' + k + ' — отметка с ' + prev + ' снята.' : 'Снимется ' + k + '.');
+    }
+    haptic();
+    changed();
+  }
+
   function select(k) {
     if (S.sel === k) return;
     S.sel = k;
@@ -477,7 +801,14 @@
     clearTimeout(S.statusTimer);
     S.statusTimer = setTimeout(function () { $('status').textContent = ''; }, 3000);
   }
+  /** Адрес v=3 и отмечена нога: линии не двигаются (кнопки неактивны; это — для клавиатуры). */
+  function lineLocked() {
+    if (!S.move || !S.mark) return false;
+    setStatus('Отмечена ' + S.mark + ' к снятию — линии не двигаются; снимите отметку, чтобы сдвигать.');
+    return true;
+  }
   function nudge(k, dir) {
+    if (!has(S.cur[k]) || lineLocked()) return;
     S.sel = k;
     var v = R.add(S.cur[k], R.muli(S.tick, dir));
     if (R.cmp(v, R.ZERO) <= 0) return;
@@ -486,15 +817,17 @@
     changed();
   }
   function jump(k, up) {
+    if (!has(S.cur[k]) || lineLocked()) return;
     S.sel = k;
-    var v = R.stepLevel(S.m5, S.cur[k], up);
+    // v=3 (сдвиг заявок): уровень упирается в соседнюю ногу — «половина пути» до неё, как стрелки бота
+    var v = S.move ? R.stepMoveLevel(S.d, S.cur, k, S.m5, up, S.tick) : R.stepLevel(S.m5, S.cur[k], up);
     if (v === null) { setStatus(up ? 'Выше уровней M5 нет.' : 'Ниже уровней M5 нет.'); renderList(); return; }
     S.cur[k] = v;
     haptic();
     changed();
   }
   function changed() {
-    var dirty = S.keys.some(function (k) { return !R.eq(S.cur[k], S.start[k]); });
+    var dirty = R.LINES.some(function (k) { return !sameQ(S.cur[k], S.start[k]); }) || S.mark !== S.startMark;
     if (dirty !== S.dirty && IN_TG && ver('6.2')) {
       try { if (dirty) TG.enableClosingConfirmation(); else TG.disableClosingConfirmation(); } catch (e) { /* нет */ }
     }
@@ -555,7 +888,7 @@
 
   function linePrices() {
     var out = [];
-    S.keys.forEach(function (k) { out.push(num(S.cur[k])); });
+    R.LINES.forEach(function (k) { if (has(S.cur[k])) out.push(num(S.cur[k])); });
     R.LINES.forEach(function (k) { if (S.bot[k]) out.push(num(S.bot[k])); });
     if (S.p.m === 'p') S.wq.forEach(function (x) { out.push(num(x[1])); });
     if (S.last) out.push(num(S.last));
@@ -575,25 +908,42 @@
     var c = colors();
     var LS = LWC.LineStyle || { Solid: 0, Dotted: 1, Dashed: 2 };
     var want = {};
-    S.keys.forEach(function (k) {
+    var own = S.p.m === 'g' ? R.LINES.filter(function (k) { return has(S.cur[k]); })
+      : (S.move ? R.LINES.filter(function (k) { return has(S.cur[k]) && k !== S.mark; }) : ['SL', 'TP']);
+    own.forEach(function (k) {
       want['own:' + k] = { price: num(S.cur[k]), color: lineColor(k, c), lineWidth: k === S.sel ? 3 : 2,
-        lineStyle: k === 'TP' ? LS.Dashed : LS.Solid, axisLabelVisible: true, title: SHORT[k] };
+        lineStyle: k === 'TP' ? LS.Dashed : LS.Solid, axisLabelVisible: true,
+        title: isAdded(k) && S.legset ? k + '+' : SHORT[k] };
     });
     R.LINES.forEach(function (k) {
       var b = S.bot[k];
       if (!b) return;
-      if (S.keys.indexOf(k) >= 0 && R.eq(b, S.cur[k])) return;
-      if (S.p.m === 'p' && S.keys.indexOf(k) < 0) return;          // ноги позиции — ниже
+      if (S.move) {                // v=3: прежнее место сдвинутой линии и отмеченная к снятию нога
+        if (k === S.mark) {
+          want['bot:' + k] = { price: num(b), color: c.gray, lineWidth: 1, lineStyle: LS.Dotted,
+            axisLabelVisible: false, title: k + ' снимется' };
+        } else if (has(S.cur[k]) && !R.eq(b, S.cur[k])) {
+          want['bot:' + k] = { price: num(b), color: c.gray, lineWidth: 1, lineStyle: LS.Dotted,
+            axisLabelVisible: false, title: (R.LEGS.indexOf(k) >= 0 ? '' : SHORT[k] + ' ') + 'было ' + px(b) };
+        }
+        return;
+      }
+      if (has(S.cur[k]) && R.eq(b, S.cur[k])) return;
+      if (S.p.m === 'p' && R.LEGS.indexOf(k) >= 0) return;          // ноги позиции — ниже
+      var gone = S.p.m === 'g' && !has(S.cur[k]);
       want['bot:' + k] = { price: num(b), color: c.gray, lineWidth: 1, lineStyle: LS.Dotted,
-        axisLabelVisible: false, title: 'бот ' + SHORT[k] };
+        axisLabelVisible: false, title: 'бот ' + SHORT[k] + (gone ? ' (убрана)' : '') };
     });
-    if (S.p.m === 'p') {
-      S.p.w.forEach(function (x) {
-        want['wait:' + x[0]] = { price: num(R.dec(x[1])), color: c.blue, lineWidth: 1, lineStyle: LS.Dotted,
-          axisLabelVisible: false, title: x[0] + ' ждёт' };
+    if (S.p.m === 'p' && !S.move) {
+      S.wq.forEach(function (x) {
+        var marked = S.mark === x[2];
+        want['wait:' + x[2]] = { price: num(x[1]), color: marked ? c.gray : c.blue, lineWidth: 1, lineStyle: LS.Dotted,
+          axisLabelVisible: false, title: x[2] + (marked ? ' снимется' : ' ждёт') };
       });
-      want.avg = { price: num(S.pa), color: c.gray, lineWidth: 1, lineStyle: LS.Solid,
-        axisLabelVisible: false, title: 'средняя' };
+      if (S.pa && !pqZero()) {
+        want.avg = { price: num(S.pa), color: c.gray, lineWidth: 1, lineStyle: LS.Solid,
+          axisLabelVisible: false, title: 'средняя' };
+      }
     }
     Object.keys(S.plines).forEach(function (id) {
       if (!want[id]) { S.series.removePriceLine(S.plines[id]); delete S.plines[id]; }
@@ -609,7 +959,7 @@
     if (!S.series || !S.bars.length) return;
     if (ev.button !== undefined && ev.button !== 0) return;
     var y = yOf(ev), best = null, dist = HIT_PX + 0.01;
-    S.keys.forEach(function (k) {
+    movable().forEach(function (k) {
       var yy = S.series.priceToCoordinate(num(S.cur[k]));
       if (yy === null || yy === undefined) return;
       var dd = Math.abs(yy - y);
@@ -634,7 +984,7 @@
     var price = S.series.coordinateToPrice(y);
     if (price === null || price === undefined || !(price > 0)) return;
     var v = R.priceForDirection(R.fromNum(price), S.tick, S.d);
-    if (R.cmp(v, R.ZERO) <= 0 || R.eq(v, S.cur[dr.k])) return;
+    if (R.cmp(v, R.ZERO) <= 0 || !has(S.cur[dr.k]) || R.eq(v, S.cur[dr.k])) return;
     S.cur[dr.k] = v;
     haptic();
     changed();
@@ -758,4 +1108,4 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
-})();
+})(typeof window !== 'undefined' ? window : globalThis);

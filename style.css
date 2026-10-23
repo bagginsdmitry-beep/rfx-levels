@@ -13,6 +13,7 @@
   --err-fg: #b42318; --err-bg: rgba(206, 38, 38, 0.10);
   --warn-fg: #7a5200; --warn-bg: rgba(230, 168, 0, 0.16);
   --info-fg: var(--hint); --info-bg: rgba(128, 134, 145, 0.12);
+  --note-bg: rgba(33, 99, 214, 0.10);
   --line-blue: #2163d6; --line-red: #ce2626; --line-green: #188c3c; --line-gray: #8a8f98;
 }
 @media (prefers-color-scheme: dark) {
@@ -23,7 +24,7 @@
     --link: var(--tg-theme-link-color, #6ea0ff);
     --btn: var(--tg-theme-button-color, #3b78e7);
     --bg2: var(--tg-theme-secondary-bg-color, #22252a);
-    --err-fg: #ff8a8a; --warn-fg: #ffd36b;
+    --err-fg: #ff8a8a; --warn-fg: #ffd36b; --note-bg: rgba(91, 141, 239, 0.18);
     --line-blue: #5b8def; --line-red: #ff6b6b; --line-green: #4cc27a; --line-gray: #8d939c;
   }
 }
@@ -34,7 +35,7 @@
   --link: var(--tg-theme-link-color, #6ea0ff);
   --btn: var(--tg-theme-button-color, #3b78e7);
   --bg2: var(--tg-theme-secondary-bg-color, #22252a);
-  --err-fg: #ff8a8a; --warn-fg: #ffd36b;
+  --err-fg: #ff8a8a; --warn-fg: #ffd36b; --note-bg: rgba(91, 141, 239, 0.18);
   --line-blue: #5b8def; --line-red: #ff6b6b; --line-green: #4cc27a; --line-gray: #8d939c;
 }
 
@@ -60,6 +61,7 @@ a { color: var(--link); }
 .banner { border-radius: 10px; padding: 8px 10px; font-size: 14px; background: var(--info-bg); color: var(--fg); }
 .banner.warn { background: var(--warn-bg); color: var(--warn-fg); }
 .banner.err { background: var(--err-bg); color: var(--err-fg); }
+.banner.note { background: var(--note-bg); }
 .fatal { margin: 24px 0; padding: 14px; border-radius: 12px; background: var(--err-bg); color: var(--err-fg); font-size: 16px; }
 
 .chart-wrap { position: relative; margin: 0 -12px; }
@@ -98,6 +100,18 @@ a { color: var(--link); }
   .row.static { grid-template-columns: minmax(52px, auto) minmax(0, 1fr); grid-template-areas: "name val"; }
 }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+
+/* 18.1: нога, которой нет, и стоп/цель без переноса — серая строка без кнопок шага */
+.row.off .name, .row.off .price { color: var(--hint); }
+/* 18.1: ждущая заявка позиции с кнопкой «Снять» / «Не снимать» справа */
+.row.static.wait { grid-template-columns: minmax(36px, auto) minmax(0, 1fr) auto; grid-template-areas: "name val act"; }
+.row.wait .cancel { grid-area: act; min-width: 0; padding: 0 12px; font-size: 14px; white-space: nowrap;
+  background: var(--bg); }
+.btn.dim { opacity: 0.45; }
+/* 18.1: полоса «Набор ног» — три кнопки поровну, при 320 px по 96 px, текст в одну строку */
+.legset { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin: 6px 0 2px; }
+.legset .btn { min-width: 0; padding: 0 2px; font-size: 14px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
 
 .status { min-height: 20px; color: var(--hint); font-size: 13px; }
 .calc { display: grid; gap: 4px; margin: 4px 0 8px; font-size: 14px; }
