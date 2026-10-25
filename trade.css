@@ -1,0 +1,149 @@
+/* trade.css — страница «Сделка» (19.0). Своя копия нужного из style.css 18.4 (правка одной страницы не ломает
+   другую). Цвета — из темы Telegram, с запасными для светлой и тёмной темы вне Telegram. Ширина от 320 px, без
+   горизонтальной прокрутки. */
+:root {
+  color-scheme: light dark;
+  --bg: var(--tg-theme-bg-color, #ffffff);
+  --fg: var(--tg-theme-text-color, #1e2126);
+  --hint: var(--tg-theme-hint-color, #6b7280);
+  --link: var(--tg-theme-link-color, #2163d6);
+  --btn: var(--tg-theme-button-color, #2163d6);
+  --btn-fg: var(--tg-theme-button-text-color, #ffffff);
+  --bg2: var(--tg-theme-secondary-bg-color, #f2f3f5);
+  --grid: rgba(128, 134, 145, 0.18);
+  --err-fg: #b42318; --err-bg: rgba(206, 38, 38, 0.10);
+  --warn-fg: #7a5200; --warn-bg: rgba(230, 168, 0, 0.16);
+  --info-fg: var(--hint); --info-bg: rgba(128, 134, 145, 0.12);
+  --note-bg: rgba(33, 99, 214, 0.10);
+  --line-blue: #2163d6; --line-red: #ce2626; --line-green: #188c3c; --line-gray: #8a8f98;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-scheme="light"]) {
+    --bg: var(--tg-theme-bg-color, #17191c);
+    --fg: var(--tg-theme-text-color, #e6e8eb);
+    --hint: var(--tg-theme-hint-color, #9aa1ab);
+    --link: var(--tg-theme-link-color, #6ea0ff);
+    --btn: var(--tg-theme-button-color, #3b78e7);
+    --bg2: var(--tg-theme-secondary-bg-color, #22252a);
+    --err-fg: #ff8a8a; --warn-fg: #ffd36b; --note-bg: rgba(91, 141, 239, 0.18);
+    --line-blue: #5b8def; --line-red: #ff6b6b; --line-green: #4cc27a; --line-gray: #8d939c;
+  }
+}
+:root[data-scheme="dark"] {
+  --bg: var(--tg-theme-bg-color, #17191c);
+  --fg: var(--tg-theme-text-color, #e6e8eb);
+  --hint: var(--tg-theme-hint-color, #9aa1ab);
+  --link: var(--tg-theme-link-color, #6ea0ff);
+  --btn: var(--tg-theme-button-color, #3b78e7);
+  --bg2: var(--tg-theme-secondary-bg-color, #22252a);
+  --err-fg: #ff8a8a; --warn-fg: #ffd36b; --note-bg: rgba(91, 141, 239, 0.18);
+  --line-blue: #5b8def; --line-red: #ff6b6b; --line-green: #4cc27a; --line-gray: #8d939c;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body {
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+           max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+}
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; }
+a { color: var(--link); }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Roboto Mono", monospace; }
+
+.top { margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 10px; }
+.title { font-weight: 600; font-size: 17px; overflow-wrap: anywhere; }
+.subtitle { color: var(--hint); font-size: 13px; }
+
+.banners { display: grid; gap: 6px; margin: 6px 0; }
+.banners:empty { display: none; }
+.banner { border-radius: 10px; padding: 8px 10px; font-size: 14px; background: var(--info-bg); color: var(--fg); }
+.banner.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.banner.err { background: var(--err-bg); color: var(--err-fg); }
+.banner.note { background: var(--note-bg); }
+.fatal { margin: 24px 0; padding: 14px; border-radius: 12px; background: var(--err-bg); color: var(--err-fg); font-size: 16px; }
+
+/* переключатели: два ряда по две кнопки в одну строку (лонг/шорт, рынок/лимит), M5/H1 под графиком */
+.mode-bar { display: flex; gap: 8px; margin: 4px 0 6px; }
+.mode-bar:empty { display: none; }
+.seg { display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 2px;
+  border-radius: 12px; background: var(--bg2); flex: 1 1 0; min-width: 0; }
+.seg:empty { display: none; }
+.seg .btn { min-width: 0; padding: 0 6px; background: transparent; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; font-size: 14px; }
+.seg .btn.on { background: var(--btn); color: var(--btn-fg); font-weight: 600; }
+.seg.small { flex: 0 0 auto; }
+.seg.small .btn { min-width: 48px; }
+
+.chart-wrap { position: relative; margin: 0 -12px; }
+.chart { height: 46vh; min-height: 240px; touch-action: none; -webkit-user-select: none; user-select: none; }
+.chart-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: 16px; color: var(--hint); background: var(--bg); }
+
+.summary { margin: 6px 0 2px; font-weight: 600; font-size: 15px; min-height: 21px; overflow-wrap: anywhere; }
+.summary.muted { color: var(--hint); font-weight: 400; }
+
+.toolbar { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+.src { flex: 1 1 auto; color: var(--hint); font-size: 12px; min-width: 0; }
+
+.btn { min-height: 44px; min-width: 44px; padding: 0 14px; border-radius: 10px; border: 0;
+  background: var(--bg2); color: var(--fg); cursor: pointer; touch-action: manipulation; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.primary { background: var(--btn); color: var(--btn-fg); }
+.btn.small { min-height: 44px; font-size: 14px; }
+.btn.wide { width: 100%; margin: 6px 0 4px; }
+
+/* линии: две строки — «● Стоп 181.20» и кнопки ▼▲⤓⤒, ниже — откуда значение */
+.lines { display: grid; gap: 6px; margin: 6px 0 2px; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name btns" "note note";
+  align-items: center; gap: 2px 6px; padding: 6px 8px; border-radius: 12px; background: var(--bg2);
+  border-left: 4px solid transparent; }
+.row.sel { border-left-color: var(--sel, var(--btn)); }
+.row .name { grid-area: name; min-height: 44px; border: 0; background: transparent; text-align: left; padding: 0;
+  cursor: pointer; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; }
+.row .label { font-weight: 600; white-space: nowrap; }
+.row .price { font-size: 16px; overflow-wrap: anywhere; }
+.row .note { grid-area: note; color: var(--hint); font-size: 12px; overflow-wrap: anywhere; }
+.row .btns { grid-area: btns; display: flex; gap: 4px; }
+.row .btns .btn { padding: 0; width: 44px; font-size: 18px; background: var(--bg); }
+.row.static { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "note"; }
+.row.static .name { min-height: 32px; cursor: default; }
+.row.off .label, .row.off .price { color: var(--hint); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: 1px; }
+
+/* цель: кнопки по ширине надписи и поровну делят остаток ряда; не влезли — перенос, а не «Вершина…» (320 px) */
+.tp-bar { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; }
+.tp-bar:empty { display: none; }
+.tp-bar .btn { flex: 1 1 auto; min-width: 44px; padding: 0 6px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-bar .btn.on { background: var(--btn); color: var(--btn-fg); font-weight: 600; }
+
+/* риск: кнопки поровну (при 320 px — до четырёх в ряд), поле суммы */
+.risk { display: grid; gap: 6px; margin: 6px 0 8px; padding: 8px; border-radius: 12px; background: var(--bg2); }
+.risk-title { font-weight: 600; font-size: 14px; }
+.risk-btns { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 4px; }
+.risk-btns .btn { min-width: 0; padding: 0 4px; font-size: 14px; white-space: nowrap; background: var(--bg); }
+.risk-btns .btn.on { background: var(--btn); color: var(--btn-fg); font-weight: 600; }
+.risk-field { display: flex; align-items: center; gap: 6px; font-size: 14px; }
+.risk-field input { flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 0 10px; border-radius: 10px;
+  border: 1px solid var(--grid); background: var(--bg); color: var(--fg); font-size: 16px; }
+.risk-note { color: var(--hint); font-size: 12px; }
+
+.status { min-height: 20px; color: var(--hint); font-size: 13px; }
+.calc { display: grid; gap: 4px; margin: 4px 0 8px; font-size: 14px; overflow-wrap: anywhere; }
+.calc .main { font-weight: 600; }
+.calc .muted { color: var(--hint); }
+.msgs { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
+.msgs:empty { display: none; }
+.msgs li { border-radius: 10px; padding: 7px 10px; font-size: 14px; overflow-wrap: anywhere; }
+.errs li { background: var(--err-bg); color: var(--err-fg); }
+.warns li { background: var(--warn-bg); color: var(--warn-fg); }
+.infos li { background: var(--info-bg); color: var(--info-fg); }
+
+.page-buttons { display: flex; gap: 10px; margin: 10px 0; }
+.page-buttons .btn { flex: 1 1 0; }
+.send-err { margin: 6px 0; padding: 10px; border-radius: 10px; background: var(--err-bg); color: var(--err-fg); }
+
+.foot { margin-top: 18px; color: var(--hint); font-size: 12px; }
