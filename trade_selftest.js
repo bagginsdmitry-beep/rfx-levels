@@ -1,7 +1,9 @@
 /* trade_selftest.js — сверка trade_rules.js с примерами, созданными кодом бота (trade_selftest/fixtures.js,
  * генератор bot_next21/tools/make_trade_fixtures.py; SPEC_C2 §14). Итог — в заголовке страницы: «SELFTEST OK N/N»
  * или «SELFTEST FAIL …». Без страницы (Deno: bot_next21/tools/selftest_trade_deno.js) итог кладётся в
- * TRADE_SELFTEST_RESULT, DOM не трогается. Группа version_guard проверяет и TradeGuard из trade.js. */
+ * TRADE_SELFTEST_RESULT, DOM не трогается. Группа version_guard проверяет и TradeGuard из trade.js; группа labels
+ * (19.1, бот 2.3) — надписи страницы TradeGuard.labels против надписей бота (manual_messages); группы breakout, t2,
+ * trail (19.2, бот 2.4) — вход при пробое, вторая цель и трейлинг Bybit против manual_rules и проверок ManualDesk. */
 (function (root) {
   'use strict';
   var R = root.TradeRules, FX = root.TRADE_FIXTURES, TG = root.TradeGuard;
@@ -159,6 +161,51 @@
       if (i.kind === 'cmp') return same({ c: R.cmpVersion(i.a, i.b) }, c.exp);
       if (i.kind === 'url') { var p = R.parseQuery(i.q); return same({ err: p.err || null }, c.exp); }
       return [false, 'неизвестный вид ' + i.kind];
+    },
+    labels: function (c) {          // 19.1: «Ручная сделка 12 · ЛОНГ SOLUSDT», «Ручная 12 SOL», «Сделка SOL»
+      if (!TG || !TG.labels) return [false, 'trade.js не загружен (TradeGuard.labels нет)'];
+      var i = c.in;
+      return same(TG.labels(i.m, i.k, i.s, i.d), c.exp);
+    },
+    breakout: function (c) {        // 19.2: уровень пробоя, «у уровня», ближайшие, ⤓⤒, по умолчанию, пальцем
+      var i = c.in, d = i.d, tick = R.dec(i.tick), last = R.dec(i.last), r;
+      switch (i.kind) {
+        case 'level': r = s(R.breakoutLevel(R.dec(i.v), d, tick)); break;
+        case 'drag': r = s(R.dragBreakout(R.dec(i.v), d, tick)); break;
+        case 'gap': r = R.breakoutGap(d, R.dec(i.lv), last, tick, i.gap); break;
+        case 'levels': r = R.breakoutLevels(d, i.levels.map(R.dec), last, tick, i.gap, i.n).map(s); break;
+        case 'step': r = s(R.stepBreakout(d, R.dec(i.cur), i.levels.map(R.dec), last, i.closer, tick, i.gap)); break;
+        case 'default': r = s(R.defaultBreakout(d, swingsIn(i.m5), last, tick, i.gap)); break;
+        default: return [false, 'неизвестный вид ' + i.kind];
+      }
+      return same({ r: r }, c.exp);
+    },
+    t2: function (c) {              // 19.2: доли двух целей, цель 2 по умолчанию, проверки цели 2 со страницы
+      var i = c.in;
+      if (i.kind === 'split') {
+        var sp = R.splitTarget2(R.dec(i.pos), i.pct, R.dec(i.step), R.dec(i.mq));
+        return same({ r: sp ? [s(sp[0]), s(sp[1])] : null }, c.exp);
+      }
+      if (i.kind === 'ok') return same({ r: R.target2Ok(i.d, R.dec(i.t1), R.dec(i.t2), R.dec(i.tick)) }, c.exp);
+      if (i.kind === 'default') {
+        var t = R.target2Default(i.d, R.dec(i.t1), R.dec(i.r), R.dec(i.tick), swingsIn(i.m5), swingsIn(i.h1), i.tb);
+        return same({ px: s(t.px), src: t.src, level: lvOut(t.level) }, c.exp);
+      }
+      if (i.kind === 'calc') return same(R.calcT2(parsed(i.q), i.st), c.exp);
+      return [false, 'неизвестный вид ' + i.kind];
+    },
+    trail: function (c) {           // 19.2: кнопки R в ценах, проверки трейлинга, трейлинг со страницы
+      var i = c.in;
+      if (i.kind === 'preset') {
+        var t = R.trailPreset(i.d, R.dec(i.avg), R.dec(i.r), i.act_r, i.dist_r, R.dec(i.tick));
+        return same({ dist: s(t.dist), active: s(t.active) }, c.exp);
+      }
+      if (i.kind === 'check') {
+        return same(R.trailOut(R.trailCheck(i.d, R.dec(i.dist), nn(i.active), R.dec(i.r), R.dec(i.tick), R.dec(i.bid),
+          R.dec(i.ask), R.dec(i.last), i.min_ticks, R.dec(i.far))), c.exp);
+      }
+      if (i.kind === 'calc') return same(R.calcTrail(parsed(i.q), i.st), c.exp);
+      return [false, 'неизвестный вид ' + i.kind];
     }
   };
 
@@ -197,7 +244,7 @@
       payloads: {
         source: 'trade_selftest (trade_rules.js ' + R.PAGE_VERSION + ')',
         note: 'данные для бота, собранные страницей из примеров payload_n и payload_q; для обратной сверки ' +
-          '(bot_next21/tools/make_trade_fixtures.py --check-js, tests/fixtures/trade_payloads_js21.json)',
+          '(bot_next24/tools/make_trade_fixtures.py --check-js, tests/fixtures/trade_payloads_js24.json)',
         cases: payloads
       } };
   }

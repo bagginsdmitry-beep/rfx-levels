@@ -1,4 +1,4 @@
-/* trade.css — страница «Сделка» (19.0). Своя копия нужного из style.css 18.4 (правка одной страницы не ломает
+/* trade.css — страница «Сделка» (19.0; 19.2 — кнопки цели 2, трейлинга и пробоя). Своя копия нужного из style.css 18.4 (правка одной страницы не ломает
    другую). Цвета — из темы Telegram, с запасными для светлой и тёмной темы вне Telegram. Ширина от 320 px, без
    горизонтальной прокрутки. */
 :root {
@@ -119,6 +119,16 @@ a { color: var(--link); }
 .tp-bar:empty { display: none; }
 .tp-bar .btn { flex: 1 1 auto; min-width: 44px; padding: 0 6px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tp-bar .btn.on { background: var(--btn); color: var(--btn-fg); font-weight: 600; }
+
+/* 19.2: вторая цель и трейлинг (режим q) — кнопки по ширине надписи, перенос рядами; вид входа из трёх кнопок
+   (рынок, лимит, пробой) — своим рядом под «Лонг / Шорт» (320 px без «Пробой…») */
+.c3-bar { display: grid; gap: 4px; margin: 6px 0 2px; }
+.c3-bar:empty { display: none; }
+.c3-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.c3-row .btn { flex: 1 1 auto; min-width: 44px; padding: 0 6px; font-size: 14px; white-space: nowrap; }
+.c3-row .btn.on { background: var(--btn); color: var(--btn-fg); font-weight: 600; }
+.mode-bar { flex-wrap: wrap; }
+.seg.three { flex: 1 1 100%; }
 
 /* риск: кнопки поровну (при 320 px — до четырёх в ряд), поле суммы */
 .risk { display: grid; gap: 6px; margin: 6px 0 8px; padding: 8px; border-radius: 12px; background: var(--bg2); }

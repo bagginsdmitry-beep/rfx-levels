@@ -1,4 +1,4 @@
-/* trade.js — страница «Сделка» мини-приложения (SPEC_C2 §2, §4, §8; бот 2.1, страница 19.0).
+/* trade.js — страница «Сделка» мини-приложения (SPEC_C2 §2, §4, §8; бот 2.1, страница 19.0; 19.1 — бот 2.3).
  *
  * Режим n («Сделка SOL»): график M5 (кнопка H1), лонг или шорт, по рынку или лимитной заявкой; линии «Вход» (у
  * лимитки), «Стоп», «Цель» — пальцем, ▼▲ — на шаг, ⤓⤒ — к уровню по правилу стрелок бота; риск 0.5 / 1 / 2 % и
@@ -6,7 +6,7 @@
  * (trade_rules.js). «Отправить» → Telegram.WebApp.sendData (данные версии 4); бот отвечает обычным
  * подтверждением, вход — только кнопкой «Подтвердить» в чате.
  *
- * Режим q («Р12 SOL», открытая и частично исполненная сделка): стоп и цель позиции пальцем, «Без цели»,
+ * Режим q («Ручная 12 SOL», открытая и частично исполненная сделка): стоп и цель позиции пальцем, «Без цели»,
  * «Поставить цель»; риск до стопа, R при цели от средней, безубыток; проверки «Перенести» бота. «Отправить» → бот
  * присылает панель «стоп и цель» с кнопкой «Перенести». Ждущая лимитка (Ч3) — позже.
  *
@@ -14,17 +14,31 @@
  * браузере (ни хранилища, ни куки), никуда ничего не отправляет, кроме sendData в чат бота.
  *
  * В начале — проверка версии файлов (TradeGuard): смесь trade.html, trade_rules.js и trade.js разных версий из
- * кэша → «Страница обновляется», боту ничего не уходит. Самопроверка (trade_selftest.html, Deno) берёт только её.
+ * кэша → «Страница обновляется», боту ничего не уходит. Самопроверка (trade_selftest.html, Deno) берёт только её
+ * и надписи (TradeGuard.labels).
+ *
+ * 19.1 (бот 2.3, решение владельца 2026-10-25): метка ручной сделки — заголовок режима q «Ручная сделка 12 · ЛОНГ
+ * SOLUSDT», надпись кнопки внизу экрана «Ручная 12 SOL» (было «Р12 · …», «Р12 SOL»), как у бота
+ * (manual_messages.trade_head, kb_trade_label). Расчёты, адрес и данные для бота — те же, что в 19.0.
+ * Доводка 2.3 (тот же номер 19.1): надпись длиннее 30 знаков укорачивается по словам, без «…» (как fit_label бота).
+ *
+ * 19.2 (бот 2.4, SPEC_C3 §3–§4 — решения владельца «со всеми рекомендациями согласен… работа в полном объёме»):
+ * режим n — вход «Пробой» (кнопка вида входа, если адрес говорит, что он включён: em с «b»): линии «Уровень» (пальцем,
+ * ▼▲, ⤓⤒ — уровни M5 за ценой не ближе bg шагов) и «предел» (предел цены от уровня), стоп и цель; бот отвечает
+ * подтверждением пробоя с кнопкой «Поставить». Режим q — вторая цель (линия «Цель 2» и доля; адрес: w2, wd, t2) и
+ * трейлинг Bybit (линии «Включение» и «Трейлинг» — цена включения и расстояние, кнопки R; адрес: ya…ym, yt, yp) открытой
+ * сделки; одна правка за раз — стоп и цель, цель 2 или трейлинг; бот отвечает панелью чата с «Поставить» / «Включить».
  */
 (function (root) {
   'use strict';
 
   // ------------------------------------------------------------------ версия файлов (как AppGuard 18.2+)
-  var APP_PAGE_VERSION = '19.0';
+  var APP_PAGE_VERSION = '19.2';
   var GUARD_TEXT = 'Страница обновляется — закройте и откройте её через минуту.';
   var REQUIRED_IDS = ['app', 'title', 'subtitle', 'banners', 'fatal', 'main', 'errs', 'modeBar', 'sideBar',
     'kindBar', 'chartWrap', 'chart', 'chartMsg', 'summary', 'tfBar', 'src', 'refresh', 'lines', 'tpBar', 'ruleBtn',
-    'status', 'risk', 'calc', 'infos', 'warns', 'pageButtons', 'cancelBtn', 'sendBtn', 'sendErr', 'tvAttr'];
+    'status', 'risk', 'calc', 'infos', 'warns', 'pageButtons', 'cancelBtn', 'sendBtn', 'sendErr', 'tvAttr',
+    'c3Bar'];
   /** Пусто — файлы одной версии; иначе текст для владельца. rules — window.TradeRules (или нет), metaVer —
    *  <meta name="page-version"> (или null), hasId(id) — есть ли элемент страницы. */
   function guardText(rules, metaVer, hasId) {
@@ -33,8 +47,39 @@
     for (var i = 0; i < REQUIRED_IDS.length; i++) if (!hasId(REQUIRED_IDS[i])) return GUARD_TEXT;
     return '';
   }
+  function baseCoin(sym) { return sym.length > 4 && /USDT$/.test(sym) ? sym.slice(0, -4) : sym; }
+  /** Как manual_messages.fit_label бота (доводка 2.3: многоточия на кнопках нет): надпись длиннее 30 знаков —
+   *  по словам: лишние слова с конца; число, разбитое пробелами на группы разрядов, уходит целиком; хвостовые
+   *  « :·,—-» убираются; одно слово длиннее 30 — первые 30 знаков. AUDIT_231 П-3: числом считаются только группы
+   *  разрядов (1–3 цифры, затем группы по 3: слово из цифр после номера сделки номер не уносит); надпись, которая с
+   *  такого числа начинается и без него пуста, посимвольно не режется — ''. */
+  var GROUP_HEAD = /^[+\-−]?[0-9]{1,3}$/, GROUP = /^[0-9]{3}$/, GROUP_LAST = /^[0-9]{3}(?:[.,][0-9]+)?$/;
+  function fitLabel(t) {
+    if (t.length <= 30) return t;
+    var words = t.split(' '), out = [];
+    for (var i = 0; i < words.length; i++) {
+      if (out.concat([words[i]]).join(' ').length > 30) break;
+      out.push(words[i]);
+    }
+    var grouped = out.length > 0 && out.length < words.length && GROUP_LAST.test(words[out.length]) &&
+      GROUP_HEAD.test(out[out.length - 1]);
+    if (grouped) {
+      while (out.length && GROUP.test(out[out.length - 1])) out.pop();
+      if (out.length && GROUP_HEAD.test(out[out.length - 1])) out.pop();
+    }
+    var s = out.join(' ').replace(/[ :·,—\-]+$/, '');
+    return s || grouped ? s : t.slice(0, 30);
+  }
+  /** Надписи страницы (19.1): title — заголовок режима q «Ручная сделка 12 · ЛОНГ SOLUSDT» (режим n — null: там
+   *  «SOLUSDT · сделка»), button — надпись кнопки внизу экрана, которой открыта страница: «Сделка SOL» (n) или
+   *  «Ручная 12 SOL» (q). Как у бота: manual_messages.trade_head, kb_n_label, kb_trade_label. */
+  function labels(m, k, s, d) {
+    var coin = baseCoin(s);
+    return { title: m === 'q' ? 'Ручная сделка ' + k + ' · ' + (d === 1 ? 'ЛОНГ' : 'ШОРТ') + ' ' + s : null,
+      button: fitLabel(m === 'n' ? 'Сделка ' + coin : 'Ручная ' + k + ' ' + coin) };
+  }
   root.TradeGuard = { APP_PAGE_VERSION: APP_PAGE_VERSION, GUARD_TEXT: GUARD_TEXT,
-    REQUIRED_IDS: REQUIRED_IDS.slice(), guardText: guardText };
+    REQUIRED_IDS: REQUIRED_IDS.slice(), guardText: guardText, labels: labels };
   if (typeof document === 'undefined' || document.querySelector('meta[name="selftest"]')) return;
 
   var R = window.TradeRules;
@@ -51,7 +96,22 @@
   var NO_BYBIT = 'Нет данных Bybit — правьте в чате (кнопки под карточкой).';
   var NO_PRICE = 'Нет цены Bybit — подождите или правьте в чате';
   var LINES = ['E', 'SL', 'TP'];
-  var NAMES = { E: 'Вход', SL: 'Стоп', TP: 'Цель' };
+  var MULTI = 'Сразу отправляется одно: стоп и цель, цель 2 или трейлинг — ';
+  /** Правок сразу несколько (аудит 2.4, B-7): «Как сейчас» вернёт всё, а лишнее убирают кнопки «Без цели 2» и «Без
+   *  трейлинга» (если они сейчас на экране — цели 2 и трейлинга ещё нет на бирже). */
+  function multiText(ch) {
+    var off = [];
+    if (ch.t2 && S.t2 && S.t2.avail && !has(S.t2.start)) off.push('«Без цели 2»');
+    if (ch.tr && S.tr && S.tr.avail && !S.tr.live) off.push('«Без трейлинга»');
+    return MULTI + (off.length ? 'уберите лишнее (' + off.join(', ') + ') или верните всё кнопкой «Как сейчас».'
+      : 'верните всё кнопкой «Как сейчас» или сдвиньте линии обратно.');
+  }
+  /** Надпись линии: у пробоя «Уровень», у двух целей «Цель 1» (19.2). */
+  function lineName(k) {
+    if (k === 'E') return S.et === 'b' ? 'Уровень' : 'Вход';
+    if (k === 'TP') return S.t2 && S.t2.on ? 'Цель 1' : 'Цель';
+    return { SL: 'Стоп', T2: 'Цель 2', TA: 'Включение', TD: 'Трейлинг' }[k];
+  }
 
   var S = {
     p: null, mode: null, d: 1, et: 'm', tick: null, coin: '',
@@ -62,7 +122,8 @@
     loaded: { '5': false, '60': false }, failed: { '5': false, '60': false }, loading: {},
     tk: null, tkFailed: false, tkLoading: false, ruleDone: false,
     chart: null, series: null, plines: {}, markers: null, shownTf: null, rows: {},
-    drag: null, sent: false, dirty: false, lastHaptic: 0, statusTimer: 0, res: null
+    drag: null, sent: false, dirty: false, lastHaptic: 0, statusTimer: 0, res: null,
+    t2: null, tr: null                     // 19.2: вторая цель и трейлинг открытой сделки (режим q)
   };
 
   function $(id) { return document.getElementById(id); }
@@ -164,7 +225,7 @@
     if (IN_TG) TG.close(); else window.close();
   }
   /** Надпись кнопки нижней клавиатуры, которой открыта страница. */
-  function buttonLabel() { return S.mode === 'n' ? 'Сделка ' + S.coin : 'Р' + S.p.k + ' ' + S.coin; }
+  function buttonLabel() { return labels(S.mode, S.p.k, S.p.s, S.d).button; }
 
   // ------------------------------------------------------------------ тема
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
@@ -177,7 +238,9 @@
       blue: cssVar('--line-blue'), red: cssVar('--line-red'), green: cssVar('--line-green'),
       gray: cssVar('--line-gray'), btn: cssVar('--btn'), hint: cssVar('--hint') };
   }
-  function lineColor(k, c) { return k === 'SL' ? c.red : (k === 'TP' ? c.green : c.blue); }
+  function lineColor(k, c) {
+    return k === 'SL' || k === 'TD' ? c.red : (k === 'TP' || k === 'T2' ? c.green : c.blue);
+  }
   function applyTheme() {
     document.documentElement.setAttribute('data-scheme', isDark() ? 'dark' : 'light');
     if (IN_TG && ver('6.1')) {
@@ -212,7 +275,6 @@
     $('banners').appendChild(b);
     return b;
   }
-  function baseCoin(sym) { return sym.length > 4 && /USDT$/.test(sym) ? sym.slice(0, -4) : sym; }
 
   function init() {
     tgInit();
@@ -233,9 +295,8 @@
     S.d = p.d;
     S.tick = R.dec(p.tk);
     S.coin = baseCoin(p.s);
-    var side = p.d === 1 ? 'ЛОНГ' : 'ШОРТ';
     if (p.m === 'q') {
-      $('title').textContent = 'Р' + p.k + ' · ' + side + ' ' + p.s;
+      $('title').textContent = labels(p.m, p.k, p.s, p.d).title;
       if (p.st === 'w') {                              // Ч3 — позже: у ждущей лимитки страница ничего не двигает
         $('subtitle').textContent = 'лимитная заявка ждёт';
         document.title = buttonLabel();
@@ -247,10 +308,15 @@
       S.cur = { E: null, SL: R.dec(p.sl), TP: R.decOrNull(p.tp) };
       S.start = { E: null, SL: S.cur.SL, TP: S.cur.TP };
       S.sel = 'SL';
+      // 19.2: цель 2 и трейлинг (адрес 19.0 / 19.1 — ключей нет: только стоп и цель)
+      S.t2 = { avail: R.has(p.w2), start: R.decOrNull(p.t2), on: R.has(p.t2), px: R.decOrNull(p.t2),
+        pct: R.has(p.wd) ? p.wd : null, rule: null };
+      S.tr = { avail: R.has(p.ya), live: R.has(p.yt), on: R.has(p.yt), dist: R.decOrNull(p.yt),
+        act: R.decOrNull(p.yp), startDist: R.decOrNull(p.yt), startAct: R.decOrNull(p.yp) };
     } else {
       $('title').textContent = p.s + ' · сделка';
       $('subtitle').textContent = 'только демо';
-      S.et = p.em.indexOf('m') >= 0 ? 'm' : 'l';
+      S.et = p.em.charAt(0);                          // m, l или b (19.2: пробой)
       S.rc = p.rc;
       S.riskDef = R.riskFloor(p.rk);
       S.riskBtn = { usdt: S.riskDef, str: null };
@@ -304,12 +370,17 @@
       stopRepeat();
       if (S.mode === 'n') {
         if (!applyRule()) { setStatus('Правило ждёт цену и свечи Bybit.'); return; }
-        setStatus('Стоп, цель' + (S.et === 'l' ? ' и цена заявки' : '') + ' — по правилу бота.');
+        setStatus((S.et === 'b' ? 'Уровень, стоп и цель' : 'Стоп, цель' + (S.et === 'l' ? ' и цена заявки' : '')) +
+          ' — по правилу бота.');
       } else {
         S.cur.SL = S.start.SL;
         S.cur.TP = S.start.TP;
         S.noTp = false;
-        setStatus('Стоп и цель — как сейчас.');
+        if (S.t2) { S.t2.on = R.has(S.t2.start); S.t2.px = S.t2.start; S.t2.pct = R.has(S.p.wd) ? S.p.wd : null; }
+        if (S.tr) { S.tr.on = S.tr.live; S.tr.dist = S.tr.startDist; S.tr.act = S.tr.startAct; }
+        buildLines();
+        setStatus('Стоп, цель' + (S.t2 && (S.t2.avail || R.has(S.t2.start)) ? ', цель 2' : '') +
+          (S.tr && (S.tr.avail || S.tr.live) ? ' и трейлинг' : '') + ' — как сейчас.');
       }
       changed();
     });
@@ -373,11 +444,15 @@
     segButton(side, 'Лонг' + (S.d === 1 ? ' ✓' : ''), S.d === 1, function () { setSide(1); }, 'Лонг');
     segButton(side, 'Шорт' + (S.d === -1 ? ' ✓' : ''), S.d === -1, function () { setSide(-1); }, 'Шорт');
     var em = S.p.em;
-    if (em === 'ml') {
-      segButton(kind, 'Рынок' + (S.et === 'm' ? ' ✓' : ''), S.et === 'm', function () { setKind('m'); }, 'Вход по рынку');
-      segButton(kind, 'Лимит' + (S.et === 'l' ? ' ✓' : ''), S.et === 'l', function () { setKind('l'); }, 'Лимитная заявка');
+    var KIND = { m: ['Рынок', 'Вход по рынку'], l: ['Лимит', 'Лимитная заявка'], b: ['Пробой', 'Вход при пробое'] };
+    var ONE = { m: 'По рынку', l: 'Лимитная заявка', b: 'Вход при пробое' };
+    kind.classList.toggle('three', em.length >= 3);
+    if (em.length >= 2) {
+      em.split('').forEach(function (x) {
+        segButton(kind, KIND[x][0] + (S.et === x ? ' ✓' : ''), S.et === x, function () { setKind(x); }, KIND[x][1]);
+      });
     } else {
-      segButton(kind, em === 'm' ? 'По рынку' : 'Лимитная заявка', true, function () { /* один вид */ });
+      segButton(kind, ONE[em], true, function () { /* один вид */ });
     }
   }
   function setSide(d) {
@@ -396,7 +471,8 @@
     applyRule();
     buildLines();
     changed();
-    setStatus(et === 'l' ? 'Лимитная заявка: цена, стоп и цель — по правилу бота.' : 'По рынку: стоп и цель — по правилу бота.');
+    setStatus(et === 'l' ? 'Лимитная заявка: цена, стоп и цель — по правилу бота.'
+      : (et === 'b' ? 'Вход при пробое: уровень, стоп и цель — по правилу бота.' : 'По рынку: стоп и цель — по правилу бота.'));
   }
   function buildTfBar() {
     var box = $('tfBar');
@@ -419,9 +495,10 @@
   /** Цель «Вершина» (у шорта «Впадина») по правилу бота от стопа S и цены расчёта (C1 §12.3, beyond — рынок). */
   function swingTarget(stop, E) {
     if (!S.tk || !has(stop)) return null;
-    var p = S.p, d = S.d, limit = S.et === 'l';
+    var p = S.p, d = S.d, limit = S.et === 'l', bk = S.et === 'b';
     var ref = R.refPrice(d, S.tk.bid, S.tk.ask);
-    var P = limit ? E : R.priceLimit(d, ref, stop, S.tick, p.sm, R.dec(p.sf));
+    if (bk && !has(E)) return null;
+    var P = limit ? E : R.priceLimit(d, bk ? E : ref, stop, S.tick, p.sm, R.dec(p.sf));
     if (!has(P)) return null;
     return R.defaultTarget(d, P, stop, { tick: S.tick, m5: S.sw['5'], h1: S.sw['60'], tb: p.tb, minR: R.dec(p.t1),
       beyond: ref });
@@ -430,12 +507,13 @@
    *  вида входа и по кнопке «По правилу бота»; со сменой цены сами не прыгают. */
   function applyRule() {
     if (S.mode !== 'n' || !ruleReady()) return false;
-    var p = S.p, d = S.d, limit = S.et === 'l';
+    var p = S.p, d = S.d, limit = S.et === 'l', bk = S.et === 'b';
     var bid = S.tk.bid, ask = S.tk.ask;
-    var E = limit ? R.defaultEntry(d, levelsM5(), bid, ask, S.tick) : null;
+    var E = limit ? R.defaultEntry(d, levelsM5(), bid, ask, S.tick)
+      : (bk ? R.defaultBreakout(d, S.sw['5'], lastPrice(), S.tick, p.bg) : null);
     var ins = R.instN(p, limit);
-    var sp = R.defaultStop(d, { et: limit ? 'limit' : 'market', bid: bid, ask: ask, tick: S.tick, fin: ins.fin,
-      fout: ins.fout, m5: S.sw['5'], h1: S.sw['60'], E: E, rule: R.ruleN(p) });
+    var sp = R.defaultStop(d, { et: limit ? 'limit' : (bk ? 'breakout' : 'market'), bid: bid, ask: ask, tick: S.tick,
+      fin: ins.fin, fout: ins.fout, m5: S.sw['5'], h1: S.sw['60'], E: E, rule: R.ruleN(p) });
     var tp = null, kind = 'none';
     if (p.td === 'swing' && sp.stop) {
       tp = swingTarget(sp.stop, E);
@@ -443,9 +521,9 @@
     } else if (p.td === '2r' || p.td === '3r') {
       kind = 'r' + p.td.charAt(0);
     }
-    S.rule = { E: E, stop: sp, entryLevel: E !== null && levelsM5().some(function (x) {
-      return R.eq(R.priceForDirection(x, S.tick, d), E);
-    }) };
+    S.rule = { E: E, stop: sp, entryLevel: E !== null && (bk ? (S.sw['5'] ? (d === 1 ? S.sw['5'].highs : S.sw['5'].lows) : [])
+      .some(function (x) { return R.eq(R.breakoutLevel(x.px, d, S.tick), E); })
+      : levelsM5().some(function (x) { return R.eq(R.priceForDirection(x, S.tick, d), E); })) };
     S.tpRule = tp;
     S.cur = { E: E, SL: sp.stop, TP: tp && tp.target ? tp.target : null };
     S.tpKind = kind;
@@ -457,6 +535,13 @@
 
   // ------------------------------------------------------------------ расчёт
   function tickerFresh() { return !!S.tk && Date.now() - S.tk.at <= TICK_MAX_AGE_MS; }
+  /** Последняя цена (по ней срабатывает пробой и идёт трейлинг); нет — опорная. */
+  function lastPrice() {
+    if (!S.tk) return null;
+    if (S.tk.last && R.cmp(S.tk.last, R.ZERO) > 0) return S.tk.last;
+    var d = S.mode === 'n' ? S.d : S.p.d;
+    return R.refPrice(d, S.tk.bid, S.tk.ask);
+  }
   function tpMode() {
     if (S.tpKind === 'r2' || S.tpKind === 'r3') return S.tpKind;
     if (S.tpKind === 'none' || !has(S.cur.TP)) return 'none';
@@ -465,7 +550,8 @@
   function stateN() {
     var fresh = tickerFresh();
     return { d: S.d, et: S.et, E: S.cur.E, S: S.cur.SL, T: tpMode() === 'fixed' ? S.cur.TP : null, tp: tpMode(),
-      risk: S.riskStr, bid: fresh ? S.tk.bid : null, ask: fresh ? S.tk.ask : null, tms: S.tk ? S.tk.ms : null,
+      risk: S.riskStr, bid: fresh ? S.tk.bid : null, ask: fresh ? S.tk.ask : null,
+      last: fresh && S.tk.last ? S.tk.last : null, tms: S.tk ? S.tk.ms : null,
       fr: S.tk ? S.tk.fr : null, fn: S.tk ? S.tk.fn : null };
   }
   /** Откуда стоп и цель (ks, kt данных): стоп по правилу — пока цена совпадает с правилом; цель — так же. */
@@ -504,11 +590,30 @@
     } else {
       var fresh = tickerFresh();
       var stq = { S: S.cur.SL, T: S.noTp ? null : S.cur.TP, bid: fresh ? S.tk.bid : null, ask: fresh ? S.tk.ask : null,
-        tf: S.tf, pl: platform(), t: Date.now() };
+        last: fresh && S.tk.last ? S.tk.last : null, tf: S.tf, pl: platform(), t: Date.now() };
       res.c = R.calcQ(S.p, stq);
-      res.payload = dataReady() ? R.buildPayloadQ(S.p, stq) : null;
+      res.ch = qChanges();
+      if (S.t2 && S.t2.on && has(S.t2.px)) {
+        res.t2 = R.calcT2(S.p, { T2: S.t2.px, pct: S.t2.pct, bid: stq.bid, ask: stq.ask });
+      }
+      if (S.tr && S.tr.on && has(S.tr.dist)) {
+        res.tr = R.calcTrail(S.p, { dist: S.tr.dist, act: S.tr.act, bid: stq.bid, ask: stq.ask, last: stq.last });
+      }
+      if (dataReady() && res.ch.n === 1) {
+        if (res.ch.t2) stq.t2 = { T2: S.t2.px, pct: S.t2.pct };
+        if (res.ch.tr) stq.tr = { dist: S.tr.dist, act: S.tr.act };
+        res.payload = R.buildPayloadQ(S.p, stq);
+      }
     }
     return res;
+  }
+  /** Что сдвинуто в режиме q (19.2: стоп и цель, цель 2, трейлинг — отправляется одно). */
+  function qChanges() {
+    var tpsl = !R.sameQ(S.cur.SL, S.start.SL) || !R.sameQ(S.cur.TP, S.start.TP) || S.noTp;
+    var t2 = !!(S.t2 && S.t2.avail && S.t2.on && has(S.t2.px) && (!has(S.t2.start) || !R.eq(S.t2.px, S.t2.start)));
+    var tr = !!(S.tr && S.tr.avail && S.tr.on && has(S.tr.dist) && (!S.tr.live || !R.sameQ(S.tr.dist, S.tr.startDist) ||
+      !R.sameQ(S.tr.act, S.tr.startAct)));
+    return { tpsl: tpsl, t2: t2, tr: tr, n: (tpsl ? 1 : 0) + (t2 ? 1 : 0) + (tr ? 1 : 0) };
   }
   /** Цель, которая сейчас на графике и в строке: у 2R/3R — посчитанная планом. */
   function shownTP(res) {
@@ -522,7 +627,7 @@
       dirty = LINES.some(function (k) { return !R.sameQ(S.cur[k], S.start[k]); }) || S.tpKind !== S.startKind ||
         S.riskStr !== null;
     } else {
-      dirty = !R.sameQ(S.cur.SL, S.start.SL) || !R.sameQ(S.cur.TP, S.start.TP) || S.noTp;
+      dirty = qChanges().n > 0 || !!(S.t2 && S.t2.on && !has(S.t2.start)) || !!(S.tr && S.tr.on && !S.tr.live);
     }
     if (dirty !== S.dirty && IN_TG && ver('6.2')) {
       try { if (dirty) TG.enableClosingConfirmation(); else TG.disableClosingConfirmation(); } catch (e) { /* нет */ }
@@ -546,6 +651,7 @@
     sm.className = 'summary' + (view.summary[1] ? ' muted' : '');
     renderLines(res);
     renderTpBar(res);
+    renderC3Bar();
     renderRisk();
     syncLines(res);
     updateButtons(res.payload);
@@ -561,13 +667,20 @@
     var code = r[0], n = r[1], d = S.d;
     switch (code) {
       case 'et_off': return S.et === 'm' ? 'Вход по рынку выключен ([manual] market = false).'
-        : 'Вход лимитной заявкой выключен ([manual] limit = false).';
+        : (S.et === 'b' ? 'Вход при пробое выключен ([manual] stop_entry = false).'
+          : 'Вход лимитной заявкой выключен ([manual] limit = false).');
       case 'no_price': return S.tkFailed && !S.tk ? NO_BYBIT : NO_PRICE;
       case 'risk_input': return 'Сумма риска — цифры и точка, не больше двух знаков после точки (например, 150 или 49.5).';
-      case 'no_entry': return 'Поставьте цену заявки';
+      case 'no_entry': return S.et === 'b' ? 'Поставьте уровень пробоя' : 'Поставьте цену заявки';
       case 'no_stop': return 'Поставьте стоп';
-      case 'stop_side': return 'Стоп ' + who(d) + ' должен быть ' + (d === 1 ? 'ниже' : 'выше') + ' цены ' +
-        (n.limit ? 'заявки ' : '') + px(R.dec(n.at));
+      case 'stop_side':
+        if (n.bk) return 'Стоп ' + who(d) + ' должен быть ' + (d === 1 ? 'ниже' : 'выше') + ' уровня пробоя ' + px(R.dec(n.at));
+        return 'Стоп ' + who(d) + ' должен быть ' + (d === 1 ? 'ниже' : 'выше') + ' цены ' +
+          (n.limit ? 'заявки ' : '') + px(R.dec(n.at));
+      case 'level':                 // 19.2 (C3c1 §4.2): уровень пробоя за последней ценой
+        if (n.gap === 'side') return 'Уровень пробоя ' + who(d) + ' — ' + (d === 1 ? 'выше' : 'ниже') + ' текущей цены ' +
+          px(R.dec(n.at));
+        return 'Цена уже у уровня ' + px(S.cur.E) + ' (сейчас ' + px(R.dec(n.at)) + ') — это вход по рынку';
       case 'stop_close':
         if (n.kind === 'fee') return 'Стоп слишком близко: комиссии ' + n.pct + ' % риска';
         return 'Стоп слишком близко: ' + stepsWord(n.n) + ' до цены (нужно не меньше ' + n.need + ')';
@@ -582,8 +695,12 @@
         if (n.size === 'bad_stop') return 'Стоп не с той стороны цены';
         return 'Объём не сложился';
       case 'entry_side':
-        if (n.beyond) return d === 1 ? 'Выше цены — это вход при пробое (будет позже). Лимитная заявка лонга — ниже текущей цены.'
-          : 'Ниже цены — это вход при пробое (будет позже). Лимитная заявка шорта — выше текущей цены.';
+        if (n.beyond) {
+          var bkOn = S.p.em.indexOf('b') >= 0;     // 19.2: пробой — своя кнопка вида входа
+          var how = bkOn ? ': кнопка «Пробой» выше' : ' (выключен)';
+          return d === 1 ? 'Выше цены — это вход при пробое' + how + '. Лимитная заявка лонга — ниже текущей цены.'
+            : 'Ниже цены — это вход при пробое' + how + '. Лимитная заявка шорта — выше текущей цены.';
+        }
         return 'Цена заявки уже за рынком — PostOnly не встанет: для ' + who(d) + ' ' + (d === 1 ? 'ниже' : 'выше') + ' ' +
           px(R.dec(n.at));
       case 'risk_limits': return riskLimitsErr();
@@ -638,7 +755,7 @@
         usdt(sz.riskPlan) + ' вместо ' + want]);
     }
     v.calc.push(['Риск ' + usdt(sz.riskPlan) + ' = ' + riskPctLabel(risk) + ' % от ' + R.fmtPlain(R.dec(p.rb)) +
-      ' — до стопа с комиссиями' + (pl.limit ? '' : ' при цене ' + px(pl.price)), 'main']);
+      ' — до стопа с комиссиями' + (pl.limit ? '' : (pl.breakout ? ' от предела ' : ' при цене ') + px(pl.price)), 'main']);
     var feesR = R.cmp(sz.riskPlan, R.ZERO) > 0 ? R.q10(R.div(pl.fees, sz.riskPlan)) : '0';
     var feeWord = pl.limit ? 'комиссии: вход мейкер и выход по стопу ' : 'комиссии входа и выхода по стопу ';
     v.calc.push([(pl.target !== null ? 'При цели ' + (rT !== null ? rWords(rT) : '—') : 'Без цели: на бирже только стоп') +
@@ -647,6 +764,14 @@
       var diff = R.qabs(R.sub(pl.ref, pl.price));
       v.calc.push(['Заявка ' + (d === 1 ? 'ниже' : 'выше') + ' цены на ' + px(diff) + ' (' +
         two(R.q10(R.mul(R.div(diff, pl.ref), R.HUNDRED))) + ' %) · PostOnly: только мейкер · живёт до ' + p.ex]);
+    } else if (pl.breakout) {          // 19.2: как подтверждение пробоя бота (SPEC_C3 §4.1)
+      var now = lastPrice() || pl.ref, lv = pl.trigger;
+      var pctBk = R.cmp(now, R.ZERO) > 0 ? R.q10(R.mul(R.div(R.sub(lv, now), now), R.HUNDRED)) : '0';
+      v.calc.push(['Пробой: сработает, когда цена дойдёт до ' + px(lv) + ' (сейчас ' + px(now) + ', ' +
+        fmtSigned(Number(pctBk), 2) + ' %), и ' + (d === 1 ? 'купит не дороже ' : 'продаст не дешевле ') + px(pl.price) +
+        ' (предел); ' + (d === 1 ? 'дороже — не купит' : 'дешевле — не продаст')]);
+      v.calc.push(['Заявка ждёт на бирже до ' + p.ex + '; в ' + p.ex + ' бот спросит: оставить или снять (без ответа — снимет в ' +
+        p.ea + ')']);
     } else {
       v.calc.push(['По рынку: предел цены ' + px(pl.price) + ' — ' + (d === 1 ? 'дороже' : 'дешевле') +
         ' не исполнится, остаток не догоняю']);
@@ -705,9 +830,51 @@
       case 'tp_side': return 'Цель ' + who(d) + ' должна быть ' + (d === 1 ? 'выше' : 'ниже') + ' ' + px(R.dec(n.at));
       case 'tick': return 'Цена не на шаге цены';
       case 'no_price': return S.tkFailed && !S.tk ? NO_BYBIT : NO_PRICE;
+      case 't1_beyond': return 'Цель 1 — ближе цели 2 (' + px(R.dec(n.t2)) + '); цель 2 двигайте её линией';
       default: return r[0];
     }
   }
+  /** Проверки цели 2 со страницы (TradeRules.calcT2 = ManualDesk.page_t2) — слова бота. */
+  function t2Text(r) {
+    var n = r[1], d = S.p.d;
+    switch (r[0]) {
+      case 'tick': return 'Цель 2 не на шаге цены';
+      case 't2_pct': return 'Доля цели 2 — одна из кнопок ниже';
+      case 't2_small': return 'Две цели — позиция мала: каждая часть — не меньше лота ' + R.fmtQty(R.dec(n.lot), R.dec(S.p.qs));
+      case 'no_price': return S.tkFailed && !S.tk ? NO_BYBIT : NO_PRICE;
+      case 't2_side': return 'Цель 2 — дальше цели 1 (' + (d === 1 ? 'выше ' : 'ниже ') + px(R.dec(n.t1)) + ')';
+      case 'tp_side': return 'Цель 2 ' + who(d) + ' должна быть ' + (d === 1 ? 'выше' : 'ниже') + ' цены ' + px(R.dec(n.at));
+      case 't2_off': return 'Вторая цель со страницы сейчас недоступна — в чате «Вторая цель»';
+      default: return r[0];
+    }
+  }
+  /** Цена включения не за рынком на 2 шага (код tr_behind) — слова бота (manual_messages.trail_behind_px_text). Аудит
+   *  2.4, B-3: впереди рынка, но ближе 2 шагов — «слишком близко к рынку … от 182.43», а не «уже позади». */
+  function trBehindText(ac, ed) {
+    var d = S.p.d, now = S.p.ya.indexOf(0) >= 0;
+    if (R.cmp(R.muli(R.sub(ac, ed), d), R.ZERO) > 0) {
+      return 'Цена включения ' + px(ac) + ' слишком близко к рынку (сейчас ' + px(ed) + ') — нужна ' +
+        (d === 1 ? 'выше' : 'ниже') + ' хотя бы на 2 шага: от ' + px(R.add(ed, R.muli(S.tick, 2 * d))) +
+        (now ? ' или «Сразу»' : '');
+    }
+    return 'Цена включения ' + px(ac) + ' уже позади (сейчас ' + px(ed) + ') — выберите ' +
+      (now ? '«Сразу» или ' : '') + 'цену дальше от рынка';
+  }
+  /** Проверки трейлинга со страницы (TradeRules.calcTrail = ManualDesk.page_trail) — слова бота. */
+  function trText(r) {
+    var n = r[1];
+    switch (r[0]) {
+      case 'tick': return 'Цена включения или расстояние не на шаге цены';
+      case 'tr_now_off': return '«Сразу» нет среди кнопок трейлинга — поставьте цену включения';
+      case 'no_price': return S.tkFailed && !S.tk ? NO_BYBIT : NO_PRICE;
+      case 'tr_far': return 'Трейлинг шире ' + R.fmtPlain(R.dec(n.lim)) + ' % цены — выберите меньшее расстояние';
+      case 'tr_behind': return trBehindText(R.dec(n.active), R.dec(n.edge));
+      case 'tr_zero': return 'Расстояние трейлинга не больше нуля';
+      case 'tr_off': return 'Трейлинг со страницы сейчас недоступен — в чате «Трейлинг»';
+      default: return r[0];
+    }
+  }
+  function rUnits(q) { var t = R.toFixedHE(q, 2); return t.replace(/\.?0+$/, '') + ' R'; }
   function riskWords(q) { return R.cmp(q, R.Q(1n, 200n)) < 0 ? '0' : usdt(q); }
   function viewQ(res) {
     var c = res.c, p = S.p, v = { errs: [], warns: [], infos: [], calc: [], summary: ['', true] };
@@ -715,8 +882,15 @@
       if (S.tkFailed && !S.tk || S.failed['5'] && !S.loaded['5']) v.errs.push(NO_BYBIT);
       v.summary = [S.tkFailed || S.failed['5'] ? 'Нет данных Bybit' : 'Загружаю цену и свечи Bybit…', true];
     }
-    if (c.check && c.check[0] === 'no_change') v.infos.push('Сдвиньте стоп или цель — пока всё как сейчас.');
-    else if (c.check && dataReady()) v.errs.push(checkTextQ(c.check));
+    var ch = res.ch || { tpsl: false, t2: false, tr: false, n: 0 };
+    var c3t2 = S.t2 && (S.t2.avail || has(S.t2.start)), c3tr = S.tr && (S.tr.avail || S.tr.live);
+    if (ch.n > 1) v.errs.push(multiText(ch));
+    else if (ch.n === 0) {
+      v.infos.push('Сдвиньте стоп' + (S.t2 && S.t2.avail ? ', цель, цель 2' : ' или цель') +
+        (S.tr && S.tr.avail ? ' или трейлинг' : '') + ' — пока всё как сейчас.');
+    } else if (ch.tpsl && c.check && c.check[0] !== 'no_change' && dataReady()) v.errs.push(checkTextQ(c.check));
+    if (ch.t2 && res.t2 && res.t2.check && dataReady()) v.errs.push(t2Text(res.t2.check));
+    if (ch.tr && res.tr && res.tr.check && dataReady() && res.tr.check[0] !== 'no_change') v.errs.push(trText(res.tr.check));
     var rNew = R.dec(c.risk_new), rOld = R.dec(c.risk_old);
     if (c.grows) v.warns.push('Стоп дальше: риск растёт на ' + usdt(R.dec(c.grow_by)) + ' — бот проверит остаток дня и предел ручных');
     if (p.lk > nowMs()) v.warns.push('Замок дня до ' + hhmm(p.lk) + ': отодвинуть стоп бот не даст; придвинуть можно');
@@ -732,18 +906,87 @@
       v.calc.push(['Остаток заявки ждёт ' + qtyTxt(R.dec(p.ql)) + ' по ' + px(R.dec(p.ep)) +
         ' — цену остатка не двигаю: «Снять остаток заявки» в чате', 'muted']);
     }
+    if (c3t2) t2Lines(v, res);
+    if (c3tr) trLines(v, res);
     if (dataReady()) {
       v.summary = ['Стоп ' + px(S.cur.SL) + ' · риск ' + R.toFixedHE(rNew, 2) + ' · ' +
         (T !== null ? 'цель ' + rWords(c.r_tp) : 'без цели'), !!(c.check && c.check[0] !== 'no_change')];
+      if (ch.n === 1 && ch.t2 && res.t2) {
+        v.summary = ['Цель 2 ' + px(S.t2.px) + (res.t2.r2 !== null ? ' · ' + rWords(res.t2.r2) : '') +
+          (res.t2.r1 !== null && res.t2.r2 !== null ? ' · обе ' + rWords(String(Number(res.t2.r1) + Number(res.t2.r2))) : ''),
+          !!res.t2.check];
+      } else if (ch.n === 1 && ch.tr && res.tr && res.tr.plan) {
+        v.summary = ['Трейлинг ' + px(R.dec(res.tr.plan.dist)) + ' от лучшей цены · ' +
+          (has(S.tr.act) ? 'включится при ' + px(S.tr.act) : 'сразу'), !!res.tr.check];
+      }
     }
     return v;
+  }
+  /** Строки цели 2 (как панель «Вторая цель» бота, SPEC_C3 §3.2). */
+  function t2Lines(v, res) {
+    var p = S.p, t = res.t2;
+    if (!S.t2.on || !t) {
+      if (has(S.t2.start)) v.calc.push(['Цель 2 ' + px(S.t2.start) + ' на ' + qtyTxt(R.dec(p.q2)) + ' — на бирже' +
+        (S.t2.avail ? '' : ' (двигать — в чате: [manual] target2 выключен)'), 'muted']);
+      return;
+    }
+    var q1 = t.q1 !== null ? qtyTxt(R.dec(t.q1)) : '—', q2 = t.q2 !== null ? qtyTxt(R.dec(t.q2)) : '—';
+    var r1 = t.r1 !== null ? rWords(t.r1) : 'R н/д', r2 = t.r2 !== null ? rWords(t.r2) : 'R н/д';
+    if (t.mode === 'edit') {
+      var same = R.eq(S.t2.px, S.t2.start);
+      v.calc.push(['Сейчас: цель 1 — ' + q1 + ' на ' + px(R.dec(p.tp)) + ' (' + r1 + '), цель 2 — ' + q2 + ' на ' +
+        px(S.t2.start) + ' (' + (t.r2_old !== null ? rWords(t.r2_old) : 'R н/д') + ')', same ? '' : 'muted']);
+      if (!same) v.calc.push(['Будет: цель 2 на ' + px(S.t2.px) + ' (' + r2 + ')', 'main']);
+      if (t.r1 !== null && t.r2_old !== null && same) {
+        v.calc.push(['Если исполнятся обе: ' + rWords(String(Number(t.r1) + Number(t.r2_old))) + '.']);
+        return;
+      }
+    } else {
+      v.calc.push(['Будет: цель 1 — ' + (100 - S.t2.pct) + ' % (' + q1 + ') на ' + px(R.dec(p.tp)) + ' (' + r1 + '), цель 2 — ' +
+        S.t2.pct + ' % (' + q2 + ') на ' + px(S.t2.px) + ' (' + r2 + ')', 'main']);
+    }
+    if (t.r1 !== null && t.r2 !== null) {
+      v.calc.push(['Если исполнятся обе: ' + rWords(String(Number(t.r1) + Number(t.r2))) + '. Стоп — общий, на всю позицию.']);
+    }
+  }
+  /** Строки трейлинга (как панель «Трейлинг» бота, SPEC_C3 §3.3). */
+  function trLines(v, res) {
+    var p = S.p, t = res.tr, st = px(R.dec(p.sl));
+    if (S.tr.live) {
+      v.calc.push(['Сейчас на бирже: трейлинг ' + px(S.tr.startDist) + ' от лучшей цены' +
+        (has(S.tr.startAct) ? ', включится при ' + px(S.tr.startAct) : '') +
+        (S.tr.avail ? '' : ' (заменить — в чате: [manual] trailing выключен)'), 'muted']);
+    }
+    if (!S.tr.on || !t || !t.plan) return;
+    var dist = px(R.dec(t.plan.dist)), dr = t.dist_r !== null ? rUnits(R.dec(t.dist_r)) : '';
+    var raised = t.plan.raised ? ' — не ближе ' + p.ym + ' шагов и двух спредов' : '';
+    var pre = S.tr.avail ? p.ya.filter(function (x) { return x !== 0 && actIs(x); })[0] : undefined;
+    if (has(t.plan.active)) {
+      v.calc.push(['Будет: включится при ' + px(R.dec(t.plan.active)) + ' (' + (pre !== undefined ? '+' + pre + ' R'
+        : rWords(t.act_r)) + '), затем держит стоп в ' +
+        dist + ' (' + dr + raised + ') от лучшей цены; при откате на ' + dist + ' — закроет всю позицию рыночной заявкой',
+        'main']);
+      v.calc.push(['Риск не растёт: до включения позицию защищает стоп ' + st + '. Работает и при выключенном компьютере.']);
+    } else {
+      v.calc.push(['Будет: сразу держит стоп в ' + dist + ' (' + dr + raised + ') от лучшей цены; при откате на ' + dist +
+        ' — закроет всю позицию рыночной заявкой', 'main']);
+      v.calc.push(['Риск не растёт: стоп ' + st + ' остаётся на бирже. Работает и при выключенном компьютере.']);
+    }
   }
 
   // ------------------------------------------------------------------ строки линий
   function movable(res) {
-    if (S.mode === 'q') return ['SL'].concat(has(shownTP(res)) ? ['TP'] : []);
+    if (S.mode === 'q') {
+      var q = ['SL'].concat(has(shownTP(res)) ? ['TP'] : []);
+      if (S.t2 && S.t2.avail && S.t2.on && has(S.t2.px)) q.push('T2');
+      if (S.tr && S.tr.avail && S.tr.on && has(S.tr.dist)) {
+        if (has(S.tr.act)) q.push('TA');
+        if (has(trLinePx())) q.push('TD');
+      }
+      return q;
+    }
     var out = [];
-    if (S.et === 'l' && has(S.cur.E)) out.push('E');
+    if ((S.et === 'l' || S.et === 'b') && has(S.cur.E)) out.push('E');
     if (has(S.cur.SL)) out.push('SL');
     if (has(shownTP(res))) out.push('TP');
     return out;
@@ -752,7 +995,11 @@
     var box = $('lines');
     box.textContent = '';
     S.rows = {};
-    var order = S.mode === 'n' && S.et === 'l' ? ['E', 'SL', 'TP'] : ['SL', 'TP'];
+    var order = S.mode === 'n' && (S.et === 'l' || S.et === 'b') ? ['E', 'SL', 'TP'] : ['SL', 'TP'];
+    if (S.mode === 'q') {                         // 19.2: цель 2 и трейлинг открытой сделки
+      if (S.t2 && (S.t2.avail || has(S.t2.start))) order.push('T2');
+      if (S.tr && (S.tr.avail || S.tr.live)) order.push('TA', 'TD');
+    }
     order.forEach(function (k) { lineRow(box, k); });
     if (S.mode === 'q') {
       S.rows.avg = staticRow(box, 'Средняя', px(R.dec(S.p.pa)), 'gray');
@@ -764,25 +1011,27 @@
     var name = el('button', 'name');
     name.type = 'button';
     var dot = el('span', 'dot');
-    var label = el('span', 'label', NAMES[k]);
+    var nm = lineName(k);
+    var label = el('span', 'label', nm);
     var price = el('span', 'price mono');
     name.appendChild(dot);
     name.appendChild(label);
     name.appendChild(price);
-    name.setAttribute('aria-label', 'Выбрать линию ' + NAMES[k]);
+    name.setAttribute('aria-label', 'Выбрать линию ' + nm);
     name.addEventListener('click', function () { select(k); });
     var btns = el('div', 'btns');
-    var dn = stepBtn('▼', NAMES[k] + ' на шаг ниже', function () { nudge(k, -1); }, true);
-    var up = stepBtn('▲', NAMES[k] + ' на шаг выше', function () { nudge(k, 1); }, true);
-    var lvDn = stepBtn('⤓', NAMES[k] + ' к уровню ниже', function () { jump(k, false); }, false);
-    var lvUp = stepBtn('⤒', NAMES[k] + ' к уровню выше', function () { jump(k, true); }, false);
+    var preset = k === 'TA' || k === 'TD';          // 19.2: у трейлинга ⤓⤒ — к соседней кнопке R
+    var dn = stepBtn('▼', nm + ' на шаг ниже', function () { nudge(k, -1); }, true);
+    var up = stepBtn('▲', nm + ' на шаг выше', function () { nudge(k, 1); }, true);
+    var lvDn = stepBtn('⤓', nm + (preset ? ' к кнопке R ниже' : ' к уровню ниже'), function () { jump(k, false); }, false);
+    var lvUp = stepBtn('⤒', nm + (preset ? ' к кнопке R выше' : ' к уровню выше'), function () { jump(k, true); }, false);
     [dn, up, lvDn, lvUp].forEach(function (b) { btns.appendChild(b); });
     var note = el('div', 'note');
     row.appendChild(name);
     row.appendChild(btns);
     row.appendChild(note);
     box.appendChild(row);
-    S.rows[k] = { kind: 'line', row: row, dot: dot, price: price, note: note, btns: [dn, up, lvDn, lvUp] };
+    S.rows[k] = { kind: 'line', row: row, dot: dot, label: label, price: price, note: note, btns: [dn, up, lvDn, lvUp] };
   }
   function staticRow(box, name, value, colorKey) {
     var row = el('div', 'row static');
@@ -799,12 +1048,27 @@
     var p = S.p, d = S.d;
     if (S.mode === 'q') {
       if (k === 'SL') return R.eq(S.cur.SL, S.start.SL) ? 'как сейчас' : 'сейчас ' + px(S.start.SL) + ', ' + stepsTxt(S.cur.SL, S.start.SL);
-      if (S.noTp) return 'снимется — на бирже останется только стоп';
+      if (k === 'T2') return t2Note();
+      if (k === 'TA') return taNote();
+      if (k === 'TD') return tdNote(res);
+      if (S.noTp) return S.t2 && has(S.t2.start) ? 'снимутся обе цели — на бирже останется только стоп'
+        : 'снимется — на бирже останется только стоп';
       if (!has(S.cur.TP)) return 'цели нет — ⤓⤒ поставят цель на ближайший уровень';
       if (!has(S.start.TP)) return 'новая — сейчас без цели';
       return R.eq(S.cur.TP, S.start.TP) ? 'как сейчас' : 'сейчас ' + px(S.start.TP) + ', ' + stepsTxt(S.cur.TP, S.start.TP);
     }
     if (!S.ruleDone) return 'жду цену и свечи Bybit';
+    if (k === 'E' && S.et === 'b') {               // 19.2: уровень пробоя
+      var b0 = S.rule.E, lp = lastPrice();
+      if (!has(S.cur.E)) return 'поставьте уровень пробоя';
+      var gapTxt = lp ? ' · сейчас ' + px(lp) + ', ' + stepsTxt(S.cur.E, lp) : '';
+      if (has(b0) && R.eq(S.cur.E, b0)) {
+        return (S.rule.entryLevel ? 'по правилу: ближайшая ' + (d === 1 ? 'вершина M5 выше' : 'впадина M5 ниже') + ' цены'
+          : 'по правилу: ' + (d === 1 ? 'вершины M5 выше' : 'впадины M5 ниже') + ' цены нет — цена ' +
+            (d === 1 ? '+ ' : MINUS + ' ') + stepsWord(Math.max(10, p.bg))) + gapTxt;
+      }
+      return 'ваш' + (has(b0) ? ' · правило ' + px(b0) + ', ' + stepsTxt(S.cur.E, b0) : '') + gapTxt;
+    }
     if (k === 'E') {
       var e0 = S.rule.E;
       if (!has(S.cur.E)) return 'поставьте цену заявки';
@@ -828,24 +1092,171 @@
     }
     return 'ваша' + (tr && tr.target ? ' · правило ' + px(tr.target) + ', ' + stepsTxt(S.cur.TP, tr.target) : '');
   }
+  /** Значение линии k (цена; у «Трейлинг» — расстояние). */
+  function rowValue(k, res) {
+    if (k === 'TP') return shownTP(res);
+    if (k === 'T2') return S.t2.on ? S.t2.px : S.t2.start;
+    if (k === 'TA') return S.tr.on ? S.tr.act : null;
+    if (k === 'TD') return S.tr.on ? S.tr.dist : (S.tr.live ? S.tr.startDist : null);
+    return S.cur[k];
+  }
+  /** Цена линии k на графике (у «Трейлинг» — стоп трейлинга при включении или сейчас). */
+  function linePx(k, res) { return k === 'TD' ? trLinePx() : rowValue(k, res); }
   function renderLines(res) {
     var c = colors(), mv = movable(res);
     Object.keys(S.rows).forEach(function (k) {
       var r = S.rows[k];
       if (r.kind === 'static') { r.dot.style.background = c[r.colorKey]; return; }
-      var val = k === 'TP' ? shownTP(res) : S.cur[k];
-      var off = k === 'TP' && !has(val);
+      var val = rowValue(k, res);
+      var c3 = k === 'T2' || k === 'TA' || k === 'TD';
+      var off = (k === 'TP' && !has(val)) || (k === 'T2' && !S.t2.on) || ((k === 'TA' || k === 'TD') && !S.tr.on) ||
+        (k === 'TA' && S.tr.on && !has(S.tr.act));
+      r.label.textContent = lineName(k);
       r.row.className = 'row' + (k === S.sel ? ' sel' : '') + (off ? ' off' : '');
       r.row.style.setProperty('--sel', lineColor(k, c));
       r.dot.style.background = off ? c.gray : lineColor(k, c);
-      r.price.textContent = has(val) ? px(val) : (k === 'TP' && S.mode === 'q' && S.noTp ? px(S.start.TP) : '—');
+      var shown = has(val) ? px(val) : (k === 'TP' && S.mode === 'q' && S.noTp ? px(S.start.TP)
+        : (k === 'TA' && S.tr.on ? 'сразу' : '—'));
+      r.price.textContent = shown;
       r.note.textContent = lineNote(k, res);
       var ready = S.mode === 'q' || S.ruleDone;
       var canStep = ready && mv.indexOf(k) >= 0 && !(k === 'TP' && S.mode === 'q' && S.noTp);
+      if (k === 'TD') canStep = ready && S.tr.avail && S.tr.on && has(S.tr.dist);
       r.btns[0].disabled = r.btns[1].disabled = !canStep;
       var canJump = ready && !(k === 'TP' && S.mode === 'q' && S.noTp) && !!S.tk;
+      if (c3) canJump = canJump && (k === 'T2' ? S.t2.avail && S.t2.on : S.tr.avail && S.tr.on);
       r.btns[2].disabled = r.btns[3].disabled = !canJump;
     });
+  }
+  // ---- 19.2: вторая цель и трейлинг (режим q)
+  function t2Note() {
+    var t = S.t2, d = S.p.d;
+    if (!t.on) return t.avail ? 'цели 2 нет — кнопка «Цель 2» ниже' : 'цели 2 нет';
+    var share = t.pct !== null ? ' · ' + t.pct + ' % позиции' : '';
+    if (has(t.start)) {
+      if (!t.avail) return 'на бирже; двигать — в чате («Цель 2 ▲▼»)';
+      return (R.eq(t.px, t.start) ? 'как сейчас' : 'сейчас ' + px(t.start) + ', ' + stepsTxt(t.px, t.start)) + share;
+    }
+    var ru = t.rule;
+    if (ru && R.eq(t.px, ru.px)) {
+      return 'по правилу бота: ' + (ru.src === 'r1' ? 'цель 1 + 1 R — ' + (d === 1 ? 'вершины выше нет' : 'впадины ниже нет')
+        : swingWords(d === 1 ? 'h' : 'l', ru.src === 'swing_h1' ? 'H1' : 'M5', ru.level.t) + bufWords(d, S.p.tb)) + share;
+    }
+    return 'ваша' + (ru ? ' · правило ' + px(ru.px) + ', ' + stepsTxt(t.px, ru.px) : '') + share;
+  }
+  function trPreset(actR, distR) {
+    return R.trailPreset(S.p.d, R.dec(S.p.pa), R.dec(S.p.y1), String(actR), String(distR), S.tick);
+  }
+  function actIs(x) { return R.sameQ(trPreset(x, '1').active, S.tr.act); }
+  function distIs(x) { return has(S.tr.dist) && R.eq(trPreset(0, x).dist, S.tr.dist); }
+  function taNote() {
+    var t = S.tr;
+    if (!t.on) return t.avail ? 'трейлинга нет — кнопка «Трейлинг» ниже' : (t.live ? '' : 'трейлинга нет');
+    var now = t.live ? (R.sameQ(t.act, t.startAct) ? ' · как сейчас' : ' · сейчас ' + (has(t.startAct) ? px(t.startAct) : 'без цены')) : '';
+    if (!has(t.act)) return (t.live && !has(t.startAct) ? 'включён — стоп трейлинга идёт за ценой' : 'сразу — без цены включения') + now;
+    var pr = t.avail ? S.p.ya.filter(function (x) { return x !== 0 && actIs(x); })[0] : undefined;
+    var r = R.div(R.muli(R.sub(t.act, R.dec(S.p.pa)), S.p.d), R.dec(S.p.y1));
+    return (pr !== undefined ? '+' + pr + ' R' : rWords(R.q10(r))) + ' от средней ' + px(R.dec(S.p.pa)) + now;
+  }
+  function tdNote(res) {
+    var t = S.tr;
+    if (!t.on || !has(t.dist)) return t.live ? 'стоит на бирже' : '';
+    var pr = t.avail ? S.p.yd.filter(function (x) { return distIs(x); })[0] : undefined;
+    var txt = 'от лучшей цены (' + (pr !== undefined ? pr + ' R' : rUnits(R.div(t.dist, R.dec(S.p.y1)))) + ')';
+    var line = trLinePx();
+    if (line) txt += ' · стоп трейлинга ' + (has(t.act) ? 'при включении ' : 'сейчас около ') + px(line);
+    if (res && res.tr && res.tr.plan && res.tr.plan.raised) txt += ' · поднято до ' + px(R.dec(res.tr.plan.dist));
+    if (t.live) txt += R.sameQ(t.dist, t.startDist) ? ' · как сейчас' : ' · сейчас ' + px(t.startDist);
+    return txt;
+  }
+  /** Стоп трейлинга на графике: цена включения (сразу — последняя цена) ∓ расстояние. */
+  function trLinePx() {
+    if (!S.tr || !S.tr.on || !has(S.tr.dist)) return null;
+    var ref = has(S.tr.act) ? S.tr.act : lastPrice();
+    if (!has(ref)) return null;
+    var v = R.sub(ref, R.muli(S.tr.dist, S.p.d));
+    return R.cmp(v, R.ZERO) > 0 ? v : null;
+  }
+  function toggleT2() {
+    var t = S.t2;
+    if (t.on) {
+      t.on = false;
+      t.px = null;
+      setStatus('Цель 2 не ставлю.');
+    } else {
+      if (!has(S.p.tp)) { setStatus('Сначала цель: вторая цель — только при цели 1.'); return; }
+      t.rule = R.target2Default(S.p.d, R.dec(S.p.tp), R.dec(S.p.y1), S.tick, S.sw['5'], S.sw['60'], S.p.tb);
+      t.px = t.rule.px;
+      t.on = true;
+      t.pct = S.p.wd;
+      S.sel = 'T2';
+      setStatus('Цель 2 — по правилу бота; долю выберите кнопками, линию — пальцем.');
+    }
+    buildLines();
+    changed();
+  }
+  function toggleTr() {
+    var t = S.tr;
+    if (t.on) {
+      t.on = false;
+      t.dist = t.act = null;
+      setStatus('Трейлинг не ставлю.');
+    } else {
+      var pr = trPreset(S.p.yb, S.p.ye);
+      t.on = true;
+      t.dist = pr.dist;
+      t.act = pr.active;
+      S.sel = has(t.act) ? 'TA' : 'TD';
+      setStatus('Трейлинг Bybit — по кнопкам ' + (S.p.yb === 0 ? '«Сразу»' : '«+' + S.p.yb + ' R»') + ' и «' + S.p.ye +
+        ' R»; линии — пальцем.');
+    }
+    buildLines();
+    changed();
+  }
+  function renderC3Bar() {
+    var box = $('c3Bar');
+    box.textContent = '';
+    if (S.mode !== 'q' || !S.t2 || !S.tr) return;
+    var p = S.p;
+    if (S.t2.avail) {
+      var g1 = el('div', 'c3-row');
+      if (!has(S.t2.start)) segButton(g1, S.t2.on ? 'Без цели 2' : 'Цель 2', false, toggleT2);
+      if (S.t2.on && !has(S.t2.start)) {
+        p.w2.forEach(function (x) {
+          segButton(g1, x + ' %' + (S.t2.pct === x ? ' ✓' : ''), S.t2.pct === x, function () {
+            S.t2.pct = x;
+            setStatus('Цель 2 — ' + x + ' % позиции.');
+            changed();
+          }, 'Доля цели 2 ' + x + ' %');
+        });
+      }
+      if (g1.childNodes.length) box.appendChild(g1);
+    }
+    if (S.tr.avail) {
+      var g2 = el('div', 'c3-row');
+      if (!S.tr.live) segButton(g2, S.tr.on ? 'Без трейлинга' : 'Трейлинг', false, toggleTr);
+      if (S.tr.on) {
+        p.ya.forEach(function (x) {
+          var on = actIs(x);
+          segButton(g2, (x === 0 ? 'Сразу' : '+' + x + ' R') + (on ? ' ✓' : ''), on, function () {
+            S.tr.act = trPreset(x, '1').active;
+            S.sel = has(S.tr.act) ? 'TA' : 'TD';
+            changed();
+          }, x === 0 ? 'Трейлинг сразу' : 'Включение с +' + x + ' R');
+        });
+        box.appendChild(g2);
+        g2 = el('div', 'c3-row');
+        p.yd.forEach(function (x) {
+          var on = distIs(x);
+          segButton(g2, x + ' R' + (on ? ' ✓' : ''), on, function () {
+            S.tr.dist = trPreset(0, x).dist;
+            S.sel = 'TD';
+            changed();
+          }, 'Расстояние трейлинга ' + x + ' R');
+        });
+      }
+      if (g2.childNodes.length) box.appendChild(g2);
+    }
   }
   var holdTimer = 0, repTimer = 0;
   function stopRepeat() { clearTimeout(holdTimer); clearInterval(repTimer); holdTimer = repTimer = 0; }
@@ -873,6 +1284,13 @@
   /** Новая цена линии k владельцем (стрелки, ▼▲, палец). */
   function setLine(k, v) {
     if (!has(v) || R.cmp(v, R.ZERO) <= 0) return false;
+    if (k === 'T2' || k === 'TA' || k === 'TD') {   // 19.2: цель 2, цена включения, расстояние трейлинга
+      var cur = k === 'T2' ? S.t2.px : (k === 'TA' ? S.tr.act : S.tr.dist);
+      if (has(cur) && R.eq(cur, v)) return false;
+      if (k === 'T2') S.t2.px = v; else if (k === 'TA') S.tr.act = v; else S.tr.dist = v;
+      S.sel = k;
+      return true;
+    }
     if (k === 'TP') {
       if (S.mode === 'n') S.tpKind = 'p';
       else S.noTp = false;
@@ -883,7 +1301,12 @@
     return true;
   }
   function nudge(k, dir) {
-    var base = k === 'TP' ? shownTP(S.res) : S.cur[k];
+    if (k === 'TD') {                              // линия вверх — у лонга расстояние меньше, у шорта больше
+      if (!has(S.tr.dist)) return;
+      if (setLine('TD', R.sub(S.tr.dist, R.muli(S.tick, dir * S.p.d)))) { haptic(); changed(); }
+      return;
+    }
+    var base = rowValue(k, S.res);
     if (!has(base)) return;
     if (setLine(k, R.add(base, R.muli(S.tick, dir)))) { haptic(); changed(); }
   }
@@ -891,9 +1314,13 @@
   function jump(k, up) {
     if (!S.tk) return;
     var d = S.mode === 'n' ? S.d : S.p.d, bid = S.tk.bid, ask = S.tk.ask, p = S.p, v = null;
-    var limit = S.mode === 'n' && S.et === 'l';
+    var limit = S.mode === 'n' && (S.et === 'l' || S.et === 'b');   // у пробоя стоп и цель — от уровня
     var lv = levelsAll();
-    if (k === 'E') {
+    if (k === 'T2' || k === 'TA' || k === 'TD') { jumpC3(k, up); return; }
+    if (k === 'E' && S.et === 'b') {
+      if (!has(S.cur.E)) return;
+      v = R.stepBreakout(d, S.cur.E, levelsM5(), lastPrice(), up !== (d === 1), S.tick, p.bg);
+    } else if (k === 'E') {
       if (!has(S.cur.E)) return;
       v = R.stepEntry(d, S.cur.E, levelsM5(), bid, ask, up === (d === 1), S.tick);
     } else if (k === 'SL') {
@@ -925,6 +1352,30 @@
       if (placed) setStatus('Уровней нет — ' + (k === 'SL' ? 'стоп поставлен в 1 %' : 'цель поставлена в 2 %') +
         ' от цены; двигайте ▼▲ или пальцем');
     }
+  }
+
+  /** ⤓⤒ цели 2 (уровни M5 и H1 за целью 1, как «Цель 2 ближе / дальше» чата) и трейлинга (соседняя кнопка R). */
+  function jumpC3(k, up) {
+    var d = S.p.d, p = S.p, v = null;
+    if (k === 'T2') {
+      if (!has(S.t2.px) || !has(p.tp)) return;
+      var t1 = R.dec(p.tp);
+      v = R.stepTarget(d, S.t2.px, levelsAll(), t1, up !== (d === 1), S.tick, p.tb);
+      if (v !== null && !R.target2Ok(d, t1, v, S.tick)) v = null;
+    } else if (k === 'TA') {
+      if (!has(S.tr.act)) return;
+      var acts = p.ya.filter(function (x) { return x !== 0; }).map(function (x) { return trPreset(x, '1').active; });
+      v = R.stepLevel(acts, S.tr.act, up);
+    } else {
+      var ref = has(S.tr.act) ? S.tr.act : lastPrice();
+      if (!has(ref) || !has(S.tr.dist)) return;
+      var lines = p.yd.map(function (x) { return R.sub(ref, R.muli(trPreset(0, x).dist, d)); });
+      var nxt = R.stepLevel(lines, R.sub(ref, R.muli(S.tr.dist, d)), up);
+      if (nxt !== null) v = R.muli(R.sub(ref, nxt), d);
+    }
+    if (v === null) { setStatus((up ? 'Выше' : 'Ниже') + (k === 'T2' ? ' уровней нет' : ' кнопок R нет') + ' — двигайте ' +
+      (up ? '▲' : '▼') + ' или пальцем'); return; }
+    if (setLine(k, v)) { haptic(); changed(); }
   }
 
   // ------------------------------------------------------------------ цель (кнопки под линиями)
@@ -1098,6 +1549,12 @@
       out.push(R.toNum(R.dec(S.p.pa)));
       if (S.p.ep) out.push(R.toNum(R.dec(S.p.ep)));
       if (S.noTp && S.p.tp) out.push(R.toNum(R.dec(S.p.tp)));
+      ['T2', 'TA', 'TD'].forEach(function (k) {     // 19.2: цель 2 и трейлинг
+        if (!S.rows[k]) return;
+        var v = linePx(k, res);
+        if (has(v)) out.push(R.toNum(v));
+      });
+      if (S.t2 && has(S.t2.start)) out.push(R.toNum(S.t2.start));
     }
     return out;
   }
@@ -1121,12 +1578,23 @@
     }
     var tp = shownTP(res);
     line('SL', S.cur.SL, c.red, LS.Solid, S.sel === 'SL' ? 3 : 2, 'Стоп', true);
-    line('TP', tp, c.green, LS.Dashed, S.sel === 'TP' ? 3 : 2, 'Цель', true);
+    line('TP', tp, c.green, LS.Dashed, S.sel === 'TP' ? 3 : 2, lineName('TP'), true);   // B-8: «Цель 1» при цели 2
     if (S.mode === 'n') {
-      if (S.et === 'l') line('E', S.cur.E, c.blue, LS.Solid, S.sel === 'E' ? 3 : 2, 'Вход', true);
+      if (S.et === 'l' || S.et === 'b') line('E', S.cur.E, c.blue, LS.Solid, S.sel === 'E' ? 3 : 2,
+        S.et === 'b' ? 'Уровень' : 'Вход', true);
       var pl = res && res.c ? res.c.plan : null;
-      if (pl && !pl.limit && R.okSize(pl)) line('lim', pl.price, c.gray, LS.Dotted, 1, 'предел', false);
+      if (pl && !pl.limit && R.okSize(pl)) line('lim', pl.price, c.gray, LS.Dotted, 1, 'предел', S.et === 'b');
     } else {
+      // 19.2: цель 2 (зелёная точками), цена включения трейлинга (синяя штрихами), стоп трейлинга (красная штрихами)
+      if (S.t2 && S.t2.on && has(S.t2.px)) line('T2', S.t2.px, c.green, LS.Dotted, S.sel === 'T2' ? 3 : 2, 'Цель 2', true);
+      if (S.t2 && has(S.t2.start) && S.t2.on && has(S.t2.px) && !R.eq(S.t2.px, S.t2.start)) {
+        line('t20', S.t2.start, c.gray, LS.Dotted, 1, 'цель 2 было', false);
+      }
+      if (S.tr && S.tr.on) {
+        if (has(S.tr.act)) line('TA', S.tr.act, c.blue, LS.Dashed, S.sel === 'TA' ? 3 : 2, 'включение', true);
+        var tdp = trLinePx();
+        if (has(tdp)) line('TD', tdp, c.red, LS.Dashed, S.sel === 'TD' ? 2 : 1, 'трейлинг', true);
+      }
       line('avg', R.dec(S.p.pa), c.gray, LS.Solid, 1, 'средняя', false);
       if (res && res.c && res.c.be) line('be', R.dec(res.c.be), c.gray, LS.Dotted, 1, 'безубыток', false);
       if (S.p.st === 'p') {
@@ -1152,7 +1620,8 @@
     if (S.mode === 'n' && !S.ruleDone) return;
     var y = yOf(ev), best = null, dist = HIT_PX + 0.01;
     movable(S.res).forEach(function (k) {
-      var v = k === 'TP' ? shownTP(S.res) : S.cur[k];
+      var v = linePx(k, S.res);
+      if (!has(v)) return;
       var yy = S.series.priceToCoordinate(R.toNum(v));
       if (yy === null || yy === undefined) return;
       var dd = Math.abs(yy - y);
@@ -1177,9 +1646,22 @@
     var price = S.series.coordinateToPrice(y);
     if (price === null || price === undefined || !(price > 0)) return;
     var raw = R.fromNum(price), d = S.mode === 'n' ? S.d : S.p.d;
-    // то же правило, что ввод цены в чате: стоп — round_stop(v, 0), цель — round_target(v, 0), вход — на шаг по стороне
-    var v = dr.k === 'SL' ? R.dragStop(raw, d, S.tick) : (dr.k === 'TP' ? R.dragTarget(raw, d, S.tick) : R.dragEntry(raw, d, S.tick));
-    var cur = dr.k === 'TP' ? shownTP(S.res) : S.cur[dr.k];
+    // то же правило, что ввод цены в чате: стоп — round_stop(v, 0), цель — round_target(v, 0), вход — на шаг по стороне;
+    // 19.2: уровень пробоя — на шаг в сторону пробоя, цель 2 — как цель, цена включения — к ближайшему шагу, «Трейлинг»
+    // — расстояние от цены включения (сразу — от последней цены) до линии, к ближайшему шагу
+    var v;
+    if (dr.k === 'TD') {
+      var ref = has(S.tr.act) ? S.tr.act : lastPrice();
+      if (!has(ref)) return;
+      var dd = R.muli(R.sub(ref, raw), d);
+      if (R.cmp(dd, R.ZERO) <= 0) return;
+      v = R.roundStep(dd, S.tick, 'nearest');
+      if (R.cmp(v, R.ZERO) <= 0) v = S.tick;
+    } else if (dr.k === 'TA') v = R.roundStep(raw, S.tick, 'nearest');
+    else if (dr.k === 'T2') v = R.dragTarget(raw, d, S.tick);
+    else if (dr.k === 'E' && S.et === 'b') v = R.dragBreakout(raw, d, S.tick);
+    else v = dr.k === 'SL' ? R.dragStop(raw, d, S.tick) : (dr.k === 'TP' ? R.dragTarget(raw, d, S.tick) : R.dragEntry(raw, d, S.tick));
+    var cur = rowValue(dr.k, S.res);
     if (has(cur) && R.eq(v, cur)) return;
     if (setLine(dr.k, v)) { haptic(); changed(); }
   }
