@@ -3,7 +3,9 @@
  * или «SELFTEST FAIL …». Без страницы (Deno: bot_next21/tools/selftest_trade_deno.js) итог кладётся в
  * TRADE_SELFTEST_RESULT, DOM не трогается. Группа version_guard проверяет и TradeGuard из trade.js; группа labels
  * (19.1, бот 2.3) — надписи страницы TradeGuard.labels против надписей бота (manual_messages); группы breakout, t2,
- * trail (19.2, бот 2.4) — вход при пробое, вторая цель и трейлинг Bybit против manual_rules и проверок ManualDesk. */
+ * trail (19.2, бот 2.4) — вход при пробое, вторая цель и трейлинг Bybit против manual_rules и проверок ManualDesk;
+ * группа order (19.3, бот 2.6) — ждущая ручная лимитка (TradeRules.calcW) против plan_size, numeric_checks,
+ * working_risk бота и порядка проверок «Сдвинуть» (ManualDesk._apply_entry_move). */
 (function (root) {
   'use strict';
   var R = root.TradeRules, FX = root.TRADE_FIXTURES, TG = root.TradeGuard;
@@ -165,7 +167,7 @@
     labels: function (c) {          // 19.1: «Ручная сделка 12 · ЛОНГ SOLUSDT», «Ручная 12 SOL», «Сделка SOL»
       if (!TG || !TG.labels) return [false, 'trade.js не загружен (TradeGuard.labels нет)'];
       var i = c.in;
-      return same(TG.labels(i.m, i.k, i.s, i.d), c.exp);
+      return same(TG.labels(i.m, i.k, i.s, i.d, i.st), c.exp);     // 19.3: st = 'w' — «… лимит»
     },
     breakout: function (c) {        // 19.2: уровень пробоя, «у уровня», ближайшие, ⤓⤒, по умолчанию, пальцем
       var i = c.in, d = i.d, tick = R.dec(i.tick), last = R.dec(i.last), r;
@@ -206,6 +208,9 @@
       }
       if (i.kind === 'calc') return same(R.calcTrail(parsed(i.q), i.st), c.exp);
       return [false, 'неизвестный вид ' + i.kind];
+    },
+    order: function (c) {           // 19.3: ждущая лимитка — цена, стоп и цель заявки, объём на тот же риск, проверки
+      return same(R.calcW(parsed(c.in.q), c.in.st), c.exp);
     }
   };
 
@@ -244,7 +249,7 @@
       payloads: {
         source: 'trade_selftest (trade_rules.js ' + R.PAGE_VERSION + ')',
         note: 'данные для бота, собранные страницей из примеров payload_n и payload_q; для обратной сверки ' +
-          '(bot_next24/tools/make_trade_fixtures.py --check-js, tests/fixtures/trade_payloads_js24.json)',
+          '(bot_next26/tools/make_trade_fixtures.py --check-js)',
         cases: payloads
       } };
   }

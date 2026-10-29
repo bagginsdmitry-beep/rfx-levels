@@ -1,6 +1,8 @@
 /* trade_rules.js — правила страницы «Сделка» (SPEC_C2 §9–§13; бот 2.1, страница 19.0; 19.1 — бот 2.3, правила те
  * же, новая только метка ручной сделки в trade.js; 19.2 — бот 2.4: вход при пробое в режиме n, вторая цель и
- * трейлинг Bybit открытой сделки в режиме q — правила SPEC_C3 §3.4, §4.2 той же копией manual_rules). Без DOM и сети.
+ * трейлинг Bybit открытой сделки в режиме q — правила SPEC_C3 §3.4, §4.2 той же копией manual_rules; 19.3 — бот 2.6:
+ * ждущая ручная лимитка в режиме q (st = w, SPEC_C2 §4.2, §12.4, §17.2 — calcW: цена, стоп и цель заявки, объём на тот
+ * же риск, проверки «Сдвинуть» и подтверждения бота). Без DOM и сети.
  *
  * Копия правил ручной сделки бота (manual_rules.py — эталон; miniapp_rules.swing_points, closed_bars) на
  * точных дробях {n, d} из BigInt: опорная цена и предел цены «по рынку», стоп за уровнем и цель на уровне,
@@ -22,8 +24,8 @@
 (function (root) {
   'use strict';
 
-  var PAGE_VERSION = '19.2';                 // 19.2 (бот 2.4): пробой, вторая цель, трейлинг
-  var KNOWN_PAGE_VERSIONS = ['19.0', '19.1', '19.2'];   // pv адреса, который страница принимает (бот 2.2 — 19.0, 2.3 — 19.1)
+  var PAGE_VERSION = '19.3';                 // 19.3 (бот 2.6): ждущая лимитка (st = w); 19.2 (бот 2.4): пробой, цель 2, трейлинг
+  var KNOWN_PAGE_VERSIONS = ['19.0', '19.1', '19.2', '19.3'];   // pv адреса, который страница принимает (бот 2.2 — 19.0, 2.3 — 19.1, 2.4 — 19.2)
   var C3_VERSION = '19.2';                   // с этой pv адрес несёт ключи пробоя, цели 2 и трейлинга
   var URL_VERSION = '4';
   var DATA_VERSION = 4;
@@ -775,10 +777,10 @@
     }
     return null;
   }
-  /** Расчёт режима q (открытая и частично исполненная). st: {S, T|null, bid, ask}. Ждущая (w, Ч3) —
-   *  {unsupported: true}. */
+  /** Расчёт режима q (открытая и частично исполненная). st: {S, T|null, bid, ask}. Ждущая (w, Ч3) — calcW (19.3; до
+   *  19.3 — {unsupported: true}). */
   function calcQ(p, st) {
-    if (p.st === 'w') return { unsupported: true };
+    if (p.st === 'w') return calcW(p, st);
     var d = p.d, tick = dec(p.tk);
     var pq = dec(p.pq), pa = dec(p.pa), fi = dec(p.fi), fo = dec(p.fo), fp = dec(p.fp), rp = dec(p.rp);
     var sl = dec(p.sl), tpOld = decOrNull(p.tp);
@@ -798,6 +800,71 @@
       r_tp: T !== null ? q10(rAt(d, T, pa, pq, fi, fp, rp)) : null,
       r_tp_old: tpOld !== null ? q10(rAt(d, tpOld, pa, pq, fi, fp, rp)) : null,
       be: toApiStr(bePrice(d, pa, fi, fo, tick)) };
+  }
+
+  // ------------------------------------------------------------------ 19.3: ждущая лимитка (Ч3, SPEC_C2 §4.2, §12.4, §17.2)
+  /** Расчёт ждущей ручной лимитки (адрес q, st = w): новые цена заявки E, стоп S и цель T на тот же риск сделки (rt).
+   *  План — confirmPlan лимитки: объём plan_size(E, S; вход мейкер fp, выход по стопу fo, risk_target rt, max_qty xl,
+   *  предел номинала cap, допуск tol) — правило «Сдвинуть» бота (_entry_size) от новых цены и стопа; R цели — от E
+   *  (цель мейкер fp). Риск ожидания до — working_risk(ql, ep, sl; fp, fo), после — риск плана нового объёма; рост
+   *  больше 0.01 USDT — grows (бот проверит остаток дня, паузу и предел ручных; страница не отказывает).
+   *  Проверки — по порядку «Сдвинуть» бота (_apply_entry_move, _entry_move_checks): шаг цены (tick); цель у ждущей
+   *  только двигается — снять или поставить нельзя (tp_keep); ничего не сдвинуто (no_change); нет цены (no_price);
+   *  цена за рынком — PostOnly не встанет (entry_side); стоп не дальше цены (stop_side); объём не сложился (min_lot);
+   *  подъём до лота — риск стал бы больше выбранного (bumped); числовые §13 (numericChecks: stop_close, stop_far,
+   *  tp_side; предупреждения — без номинала: порога cw в адресе q нет). Маржу и ликвидацию проверяет только бот.
+   *  st: {E (нет — прежняя ep), S, T (null — без цели), bid, ask}. → {check: null | [код, числа], e_changed,
+   *  s_changed, t_changed, plan (planOut | null — нет цены), warns, risk_old, risk_new (null — объём не сложился),
+   *  grows, grow_by}. */
+  function calcW(p, st) {
+    var out = { check: null, e_changed: false, s_changed: false, t_changed: false, plan: null, warns: [],
+      risk_old: null, risk_new: null, grows: false, grow_by: '0' };
+    if (!p || p.m !== 'q' || p.st !== 'w') { out.check = ['w_off', {}]; return out; }
+    var d = p.d, tick = dec(p.tk), fp = dec(p.fp), fo = dec(p.fo);
+    var ep = dec(p.ep), ql = dec(p.ql), sl = dec(p.sl), tpOld = decOrNull(p.tp);
+    var E = has(st.E) ? dec(st.E) : ep, S = dec(st.S), T = decOrNull(st.T);
+    out.e_changed = !eq(E, ep);
+    out.s_changed = !eq(S, sl);
+    out.t_changed = !sameQ(T, tpOld);
+    var rOld = workingRisk(d, ql, ep, sl, fp, fo);
+    out.risk_old = toApiStr(rOld);
+    var bid = decOrNull(st.bid), ask = decOrNull(st.ask), pl = null;
+    if (bid !== null && ask !== null) {
+      pl = confirmPlan(d, 'limit', { bid: bid, ask: ask, tick: tick, fin: fp, fout: fo, ftp: fp, S: S,
+        tpMode: T !== null ? 'fixed' : 'none', T: T, E: E, risk: dec(p.rt), qs: dec(p.qs), mq: dec(p.mq),
+        mn: dec(p.mn), maxQ: decOrNull(p.xl), cap: dec(p.cap), tol: dec(p.tol), sm: 0, sf: ZERO });
+      out.plan = planOut(pl);
+    }
+    var found = null;
+    if (!onStep(E, tick) || !onStep(S, tick) || (T !== null && !onStep(T, tick))) found = ['tick', {}];
+    else if ((T === null) !== (tpOld === null)) found = ['tp_keep', { had: tpOld !== null }];
+    else if (!out.e_changed && !out.s_changed && !out.t_changed) found = ['no_change', {}];
+    else if (pl === null) found = ['no_price', {}];
+    else {
+      var edge = d === 1 ? bid : ask;
+      if (cmp(muli(sub(edge, E), d), ZERO) <= 0) {
+        found = ['entry_side', { at: toApiStr(edge), beyond: d === 1 ? cmp(E, ask) > 0 : cmp(E, bid) < 0 }];
+      } else if (cmp(muli(sub(E, S), d), ZERO) <= 0) {
+        found = ['stop_side', { at: toApiStr(E), limit: true }];
+      } else if (!okSize(pl)) {
+        found = ['min_lot', { size: pl.size ? pl.size.code : null,
+          risk_need: pl.size && pl.size.riskNeed ? toApiStr(pl.size.riskNeed) : null }];
+      } else if (pl.size.bumped) {
+        found = ['bumped', { risk: toApiStr(pl.size.riskPlan) }];
+      } else {
+        var nc = numericChecks(pl, thresholds(p), ZERO);
+        found = nc.refuse;
+        out.warns = nc.warns;
+      }
+    }
+    if (pl !== null && okSize(pl)) {
+      var rNew = pl.size.riskPlan;
+      out.risk_new = toApiStr(rNew);
+      out.grows = cmp(sub(rNew, rOld), CENT) > 0;
+      out.grow_by = toApiStr(out.grows ? sub(rNew, rOld) : ZERO);
+    }
+    out.check = found;
+    return out;
   }
 
   // ------------------------------------------------------------------ 19.2: вторая цель (SPEC_C3 §3.2, §3.4)
@@ -1158,18 +1225,28 @@
     if (payloadBytes(JSON.stringify(obj)) > PAYLOAD_MAX_BYTES) return null;
     return obj;
   }
-  /** Данные режима q (открытая и частично исполненная) или null: ничего не сдвинуто, проверка «Перенести»
-   *  не проходит, нет цены, ждущая лимитка (Ч3 — позже). st: {S, T|null, bid, ask, last, tf, pl, t}; 19.2 — одна
-   *  правка за раз: st.t2 = {T2, pct} (цель 2, проверки calcT2) или st.tr = {dist, act | null} (трейлинг, проверки
-   *  calcTrail) — тогда стоп и цель в данных как в адресе; o — восемь значений (ещё t2 и yt адреса). */
+  /** Данные режима q или null: ничего не сдвинуто, проверка «Перенести» не проходит, нет цены. Открытая и частично
+   *  исполненная — st: {S, T|null, bid, ask, last, tf, pl, t}; 19.2 — одна правка за раз: st.t2 = {T2, pct} (цель 2,
+   *  проверки calcT2) или st.tr = {dist, act | null} (трейлинг, проверки calcTrail) — тогда стоп и цель в данных как в
+   *  адресе; o — восемь значений (ещё t2 и yt адреса). 19.3 — ждущая лимитка (st = w): st: {E, S, T|null, bid, ask,
+   *  tf, pl, t}, проверки calcW; lv = [новая цена, стоп, цель | «-»], pq — новый объём, pr — его риск до стопа, pb —
+   *  поднят до лота (всегда 0: подъём — отказ bumped); цели 2 и трейлинга у ждущей нет. */
   function buildPayloadQ(p, st) {
-    if (!p || p.m !== 'q' || p.st === 'w') return null;
+    if (!p || p.m !== 'q') return null;
     if (st.tf !== '5' && st.tf !== '60') return null;
     if (!okTime(st.t)) return null;
     var dash = function (x) { return x === null || x === undefined ? '-' : x; };
     if (has(st.t2) && has(st.tr)) return null;
-    var tg = '-', tr = '-', lv, pr;
-    if (has(st.t2) || has(st.tr)) {
+    var tg = '-', tr = '-', lv, pr, pq = '=', pb = 0;
+    if (p.st === 'w') {                     // 19.3 (Ч3): цена, стоп и цель ждущей лимитки
+      if (has(st.t2) || has(st.tr)) return null;
+      var cw = calcW(p, st);
+      if (cw.check || !cw.plan || !cw.plan.size || !cw.plan.size.ok) return null;
+      lv = [cw.plan.price, cw.plan.stop, cw.plan.target !== null ? cw.plan.target : '-'];
+      pq = cw.plan.size.qty;
+      pr = toFixedHE(dec(cw.plan.size.risk_plan), 2);
+      pb = cw.plan.size.bumped ? 1 : 0;
+    } else if (has(st.t2) || has(st.tr)) {
       if (has(st.t2)) {
         var c2 = calcT2(p, { T2: st.t2.T2, pct: st.t2.pct, bid: st.bid, ask: st.ask });
         if (c2.check) return null;
@@ -1191,7 +1268,7 @@
     }
     var obj = { v: DATA_VERSION, m: 'q', k: p.k, s: p.s, d: p.d, st: p.st, lv: lv,
       o: [dash(p.ep), dash(p.ql), p.pq, dash(p.pa), p.sl, dash(p.tp), dash(p.t2), dash(p.yt)],
-      tg: tg, tr: tr, al: '-', tf: st.tf, pq: '=', pr: pr, pb: 0,
+      tg: tg, tr: tr, al: '-', tf: st.tf, pq: pq, pr: pr, pb: pb,
       pv: PAGE_VERSION, pl: platformTag(st.pl), t: st.t };
     obj = ordered(obj, PAYLOAD_Q_KEYS);
     if (payloadBytes(JSON.stringify(obj)) > PAYLOAD_MAX_BYTES) return null;
@@ -1223,7 +1300,7 @@
     riskInLimits: riskInLimits, riskLimitsUsdt: riskLimitsUsdt, riskQuick: riskQuick, riskPctLabel: riskPctLabel,
     parseRiskInput: parseRiskInput, riskOf: riskOf,
     instN: instN, ruleN: ruleN, thresholds: thresholds, planOut: planOut, extrasN: extrasN, calcN: calcN,
-    calcNOut: calcNOut, tpslChecks: tpslChecks, calcQ: calcQ,
+    calcNOut: calcNOut, tpslChecks: tpslChecks, calcQ: calcQ, calcW: calcW,
     breakoutLevel: breakoutLevel, breakoutGap: breakoutGap, breakoutLevels: breakoutLevels, stepBreakout: stepBreakout,
     defaultBreakout: defaultBreakout, dragBreakout: dragBreakout,
     splitTarget2: splitTarget2, target2Ok: target2Ok, target2Default: target2Default, calcT2: calcT2,

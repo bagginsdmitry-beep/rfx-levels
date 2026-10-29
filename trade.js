@@ -8,7 +8,7 @@
  *
  * Режим q («Ручная 12 SOL», открытая и частично исполненная сделка): стоп и цель позиции пальцем, «Без цели»,
  * «Поставить цель»; риск до стопа, R при цели от средней, безубыток; проверки «Перенести» бота. «Отправить» → бот
- * присылает панель «стоп и цель» с кнопкой «Перенести». Ждущая лимитка (Ч3) — позже.
+ * присылает панель «стоп и цель» с кнопкой «Перенести». Ждущая лимитка («Ручная 13 SOL лимит», st = w) — с 19.3.
  *
  * Страница ничего не делает на бирже. Сеть: только публичные свечи и тикер api.bybit.com. Ничего не хранит в
  * браузере (ни хранилища, ни куки), никуда ничего не отправляет, кроме sendData в чат бота.
@@ -28,12 +28,18 @@
  * подтверждением пробоя с кнопкой «Поставить». Режим q — вторая цель (линия «Цель 2» и доля; адрес: w2, wd, t2) и
  * трейлинг Bybit (линии «Включение» и «Трейлинг» — цена включения и расстояние, кнопки R; адрес: ya…ym, yt, yp) открытой
  * сделки; одна правка за раз — стоп и цель, цель 2 или трейлинг; бот отвечает панелью чата с «Поставить» / «Включить».
+ *
+ * 19.3 (бот 2.6, SPEC_C2 §4.2, §9.2, §17.2 — Ч3, просьба владельца 2026-10-29): режим q у ждущей ручной лимитки (st = w,
+ * кнопка «Ручная 13 SOL лимит»): линии «Вход» (цена заявки), «Стоп», «Цель» — пальцем, ▼▲, ⤓⤒ (цена — уровни M5 не за
+ * рынок, стоп и цель — уровни M5 и H1 от цены заявки); объём — на тот же риск сделки, пересчитан от новых цены и стопа
+ * (TradeRules.calcW = правило «Сдвинуть» бота); цель у ждущей только двигается (снять или поставить — после
+ * исполнения). «Отправить» → бот присылает панель заявки с кнопкой «Перенести».
  */
 (function (root) {
   'use strict';
 
   // ------------------------------------------------------------------ версия файлов (как AppGuard 18.2+)
-  var APP_PAGE_VERSION = '19.2';
+  var APP_PAGE_VERSION = '19.3';
   var GUARD_TEXT = 'Страница обновляется — закройте и откройте её через минуту.';
   var REQUIRED_IDS = ['app', 'title', 'subtitle', 'banners', 'fatal', 'main', 'errs', 'modeBar', 'sideBar',
     'kindBar', 'chartWrap', 'chart', 'chartMsg', 'summary', 'tfBar', 'src', 'refresh', 'lines', 'tpBar', 'ruleBtn',
@@ -72,11 +78,12 @@
   }
   /** Надписи страницы (19.1): title — заголовок режима q «Ручная сделка 12 · ЛОНГ SOLUSDT» (режим n — null: там
    *  «SOLUSDT · сделка»), button — надпись кнопки внизу экрана, которой открыта страница: «Сделка SOL» (n) или
-   *  «Ручная 12 SOL» (q). Как у бота: manual_messages.trade_head, kb_n_label, kb_trade_label. */
-  function labels(m, k, s, d) {
+   *  «Ручная 12 SOL» (q; 19.3: у ждущей лимитки, st = 'w', — «Ручная 13 SOL лимит»). Как у бота:
+   *  manual_messages.trade_head, kb_n_label, kb_trade_label. */
+  function labels(m, k, s, d, st) {
     var coin = baseCoin(s);
     return { title: m === 'q' ? 'Ручная сделка ' + k + ' · ' + (d === 1 ? 'ЛОНГ' : 'ШОРТ') + ' ' + s : null,
-      button: fitLabel(m === 'n' ? 'Сделка ' + coin : 'Ручная ' + k + ' ' + coin) };
+      button: fitLabel(m === 'n' ? 'Сделка ' + coin : 'Ручная ' + k + ' ' + coin + (st === 'w' ? ' лимит' : '')) };
   }
   root.TradeGuard = { APP_PAGE_VERSION: APP_PAGE_VERSION, GUARD_TEXT: GUARD_TEXT,
     REQUIRED_IDS: REQUIRED_IDS.slice(), guardText: guardText, labels: labels };
@@ -225,7 +232,9 @@
     if (IN_TG) TG.close(); else window.close();
   }
   /** Надпись кнопки нижней клавиатуры, которой открыта страница. */
-  function buttonLabel() { return labels(S.mode, S.p.k, S.p.s, S.d).button; }
+  function buttonLabel() { return labels(S.mode, S.p.k, S.p.s, S.d, S.p.st).button; }
+  /** 19.3: режим q у ждущей лимитки (st = w) — цена, стоп и цель заявки. */
+  function isW() { return S.mode === 'q' && !!S.p && S.p.st === 'w'; }
 
   // ------------------------------------------------------------------ тема
   function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
@@ -297,22 +306,24 @@
     S.coin = baseCoin(p.s);
     if (p.m === 'q') {
       $('title').textContent = labels(p.m, p.k, p.s, p.d).title;
-      if (p.st === 'w') {                              // Ч3 — позже: у ждущей лимитки страница ничего не двигает
-        $('subtitle').textContent = 'лимитная заявка ждёт';
-        document.title = buttonLabel();
-        fatal('Правка лимитки со страницы будет позже — «Сдвинуть» в чате.', true);
-        return;
-      }
-      $('subtitle').textContent = p.st === 'p' ? 'исполнена частично — стоп и цель' : 'стоп и цель позиции';
       S.et = p.et;
-      S.cur = { E: null, SL: R.dec(p.sl), TP: R.decOrNull(p.tp) };
-      S.start = { E: null, SL: S.cur.SL, TP: S.cur.TP };
-      S.sel = 'SL';
-      // 19.2: цель 2 и трейлинг (адрес 19.0 / 19.1 — ключей нет: только стоп и цель)
-      S.t2 = { avail: R.has(p.w2), start: R.decOrNull(p.t2), on: R.has(p.t2), px: R.decOrNull(p.t2),
-        pct: R.has(p.wd) ? p.wd : null, rule: null };
-      S.tr = { avail: R.has(p.ya), live: R.has(p.yt), on: R.has(p.yt), dist: R.decOrNull(p.yt),
-        act: R.decOrNull(p.yp), startDist: R.decOrNull(p.yt), startAct: R.decOrNull(p.yp) };
+      if (p.st === 'w') {                              // 19.3 (Ч3): ждущая лимитка — цена, стоп и цель заявки
+        $('subtitle').textContent = 'лимитная заявка ждёт — цена, стоп, цель';
+        S.cur = { E: R.dec(p.ep), SL: R.dec(p.sl), TP: R.decOrNull(p.tp) };
+        S.start = { E: S.cur.E, SL: S.cur.SL, TP: S.cur.TP };
+        S.sel = 'E';
+        S.t2 = S.tr = null;                            // цели 2 и трейлинга у ждущей нет
+      } else {
+        $('subtitle').textContent = p.st === 'p' ? 'исполнена частично — стоп и цель' : 'стоп и цель позиции';
+        S.cur = { E: null, SL: R.dec(p.sl), TP: R.decOrNull(p.tp) };
+        S.start = { E: null, SL: S.cur.SL, TP: S.cur.TP };
+        S.sel = 'SL';
+        // 19.2: цель 2 и трейлинг (адрес 19.0 / 19.1 — ключей нет: только стоп и цель)
+        S.t2 = { avail: R.has(p.w2), start: R.decOrNull(p.t2), on: R.has(p.t2), px: R.decOrNull(p.t2),
+          pct: R.has(p.wd) ? p.wd : null, rule: null };
+        S.tr = { avail: R.has(p.ya), live: R.has(p.yt), on: R.has(p.yt), dist: R.decOrNull(p.yt),
+          act: R.decOrNull(p.yp), startDist: R.decOrNull(p.yt), startAct: R.decOrNull(p.yp) };
+      }
     } else {
       $('title').textContent = p.s + ' · сделка';
       $('subtitle').textContent = 'только демо';
@@ -373,14 +384,18 @@
         setStatus((S.et === 'b' ? 'Уровень, стоп и цель' : 'Стоп, цель' + (S.et === 'l' ? ' и цена заявки' : '')) +
           ' — по правилу бота.');
       } else {
+        S.cur.E = S.start.E;                           // 19.3: у ждущей лимитки — и цена заявки
         S.cur.SL = S.start.SL;
         S.cur.TP = S.start.TP;
         S.noTp = false;
         if (S.t2) { S.t2.on = R.has(S.t2.start); S.t2.px = S.t2.start; S.t2.pct = R.has(S.p.wd) ? S.p.wd : null; }
         if (S.tr) { S.tr.on = S.tr.live; S.tr.dist = S.tr.startDist; S.tr.act = S.tr.startAct; }
         buildLines();
-        setStatus('Стоп, цель' + (S.t2 && (S.t2.avail || R.has(S.t2.start)) ? ', цель 2' : '') +
-          (S.tr && (S.tr.avail || S.tr.live) ? ' и трейлинг' : '') + ' — как сейчас.');
+        if (isW()) setStatus('Цена заявки, стоп' + (R.has(S.start.TP) ? ' и цель' : '') + ' — как сейчас.');
+        else {
+          setStatus('Стоп, цель' + (S.t2 && (S.t2.avail || R.has(S.t2.start)) ? ', цель 2' : '') +
+            (S.tr && (S.tr.avail || S.tr.live) ? ' и трейлинг' : '') + ' — как сейчас.');
+        }
       }
       changed();
     });
@@ -587,6 +602,13 @@
         pst.t = Date.now();
         res.payload = R.buildPayloadN(S.p, pst);
       }
+    } else if (isW()) {                                 // 19.3: ждущая лимитка — цена, стоп и цель заявки
+      var fw = tickerFresh();
+      var stw = { E: S.cur.E, S: S.cur.SL, T: S.cur.TP, bid: fw ? S.tk.bid : null, ask: fw ? S.tk.ask : null,
+        tf: S.tf, pl: platform(), t: Date.now() };
+      res.c = R.calcW(S.p, stw);
+      res.ch = qChanges();
+      if (dataReady() && res.ch.n === 1) res.payload = R.buildPayloadQ(S.p, stw);
     } else {
       var fresh = tickerFresh();
       var stq = { S: S.cur.SL, T: S.noTp ? null : S.cur.TP, bid: fresh ? S.tk.bid : null, ask: fresh ? S.tk.ask : null,
@@ -607,9 +629,11 @@
     }
     return res;
   }
-  /** Что сдвинуто в режиме q (19.2: стоп и цель, цель 2, трейлинг — отправляется одно). */
+  /** Что сдвинуто в режиме q (19.2: стоп и цель, цель 2, трейлинг — отправляется одно; 19.3: у ждущей лимитки цена,
+   *  стоп и цель — одна правка). */
   function qChanges() {
-    var tpsl = !R.sameQ(S.cur.SL, S.start.SL) || !R.sameQ(S.cur.TP, S.start.TP) || S.noTp;
+    var tpsl = !R.sameQ(S.cur.SL, S.start.SL) || !R.sameQ(S.cur.TP, S.start.TP) || S.noTp ||
+      !R.sameQ(S.cur.E, S.start.E);
     var t2 = !!(S.t2 && S.t2.avail && S.t2.on && has(S.t2.px) && (!has(S.t2.start) || !R.eq(S.t2.px, S.t2.start)));
     var tr = !!(S.tr && S.tr.avail && S.tr.on && has(S.tr.dist) && (!S.tr.live || !R.sameQ(S.tr.dist, S.tr.startDist) ||
       !R.sameQ(S.tr.act, S.tr.startAct)));
@@ -639,7 +663,7 @@
   function recalc() {
     var res = compute();
     S.res = res;
-    var view = S.mode === 'n' ? viewN(res) : viewQ(res);
+    var view = S.mode === 'n' ? viewN(res) : (isW() ? viewW(res) : viewQ(res));
     fill('errs', view.errs);
     fill('warns', view.warns);
     fill('infos', view.infos);
@@ -974,8 +998,87 @@
     }
   }
 
+  // ------------------------------------------------------------------ 19.3: тексты ждущей лимитки (режим q, st = w)
+  /** Проверки ждущей лимитки (TradeRules.calcW = «Сдвинуть» бота) — слова бота. */
+  function checkTextW(r) {
+    var n = r[1], d = S.p.d;
+    switch (r[0]) {
+      case 'tick': return 'Цена не на шаге цены';
+      case 'tp_keep': return n.had ? 'Цель у ждущей заявки не снимается — снять её можно после исполнения'
+        : 'Цель у ждущей заявки не ставится — поставить её можно после исполнения';
+      case 'no_price': return S.tkFailed && !S.tk ? NO_BYBIT : NO_PRICE;
+      case 'entry_side':
+        if (n.beyond) {
+          return (d === 1 ? 'Выше' : 'Ниже') + ' цены — это вход при пробое, у лимитной заявки его нет. Лимитная заявка ' +
+            who(d) + ' — ' + (d === 1 ? 'ниже' : 'выше') + ' текущей цены.';
+        }
+        return 'Цена за рынком — PostOnly не встанет: для ' + who(d) + ' ' + (d === 1 ? 'ниже' : 'выше') + ' ' +
+          px(R.dec(n.at));
+      case 'bumped': return 'Объём поднялся бы до минимального лота: риск стал бы ' + usdt(R.dec(n.risk)) +
+        ' — больше выбранного';
+      case 'w_off': return BAD_LINK;
+      default: return refusalText(r);        // stop_side (цены заявки), stop_close, stop_far, tp_side, min_lot
+    }
+  }
+  /** Экран ждущей лимитки (SPEC_C2 §4.2): заявка и объём на тот же риск, стоп и цель, риск до и после, R цели,
+   *  комиссии, расстояние до рынка; рост риска — жёлтая строка (бот проверит остаток дня, паузу и предел ручных). */
+  function viewW(res) {
+    var c = res.c, p = S.p, d = p.d, v = { errs: [], warns: [], infos: [], calc: [], summary: ['', true] };
+    var ready = dataReady();
+    if (!ready) {
+      if (S.tkFailed && !S.tk || S.failed['5'] && !S.loaded['5']) v.errs.push(NO_BYBIT);
+      v.summary = [S.tkFailed || S.failed['5'] ? 'Нет данных Bybit' : 'Загружаю цену и свечи Bybit…', true];
+    }
+    var ch = res.ch || { n: 0 }, hasTp = has(S.start.TP);
+    if (ch.n === 0) v.infos.push('Сдвиньте цену заявки, стоп' + (hasTp ? ' или цель' : '') + ' — пока всё как сейчас.');
+    else if (c.check && c.check[0] !== 'no_change' && ready) v.errs.push(checkTextW(c.check));
+    if (ready) c.warns.forEach(function (w) { v.warns.push(warnText(w)); });
+    var pl = c.plan, sz = pl && pl.size && pl.size.ok ? pl.size : null;
+    var ep = R.dec(p.ep), ql = R.dec(p.ql), rOld = R.dec(c.risk_old), qs = R.dec(p.qs);
+    if (c.grows && ch.n > 0) {
+      v.warns.push('Риск заявки растёт: ' + R.toFixedHE(rOld, 2) + ' → ' + usdt(R.dec(c.risk_new)) +
+        ' — бот проверит остаток дня, паузу и предел ручных');
+      if (p.lk > nowMs()) v.warns.push('Замок дня до ' + hhmm(p.lk) + ': рост риска заявки бот не примет; уменьшить можно');
+    }
+    var qNew =sz && !R.eq(R.dec(sz.qty), ql) ? ' → ' + qtyTxt(R.dec(sz.qty)) : ' ' + S.coin;
+    v.calc.push([(c.e_changed ? 'Заявка ' + px(ep) + ' → ' + px(S.cur.E) : 'Заявка ' + px(ep) + ' как сейчас') +
+      ' · объём ' + R.fmtQty(ql, qs) + qNew + ' на тот же риск', 'main']);
+    var sl0 = R.dec(p.sl), tp0 = R.decOrNull(p.tp);
+    v.calc.push([(c.s_changed ? 'Стоп ' + px(sl0) + ' → ' + px(S.cur.SL) : 'Стоп ' + px(sl0) + ' без изм.') + ' · ' +
+      (tp0 === null ? 'без цели' : (c.t_changed ? 'цель ' + px(tp0) + ' → ' + px(S.cur.TP) : 'цель ' + px(tp0) + ' без изм.'))]);
+    if (sz) {
+      var rNew = R.dec(sz.risk_plan);
+      v.calc.push(['Риск ' + usdt(rNew) + (ch.n ? ' (было ' + R.toFixedHE(rOld, 2) + ')' : '') + ' · ' + (pl.target !== null
+        ? 'при цели ' + (pl.r_target !== null ? rWords(pl.r_target) : '—') : 'без цели: на бирже только стоп'), 'main']);
+      var want = R.pyFixed(R.dec(p.rt), 2);
+      if (sz.capped === 'notional') {
+        v.calc.push(['Объём урезан пределом номинала ' + R.fmtPlain(R.dec(p.cap)) + ' USDT: риск ' + usdt(rNew) +
+          ' вместо ' + want]);
+      } else if (sz.capped === 'max_qty') {
+        v.calc.push(['Объём урезан пределом объёма заявки биржи (' + qtyTxt(R.dec(p.xl)) + '): риск ' + usdt(rNew) +
+          ' вместо ' + want]);
+      }
+      var feesR = R.cmp(rNew, R.ZERO) > 0 ? R.q10(R.div(R.dec(pl.fees), rNew)) : '0';
+      v.calc.push(['Комиссии: вход мейкер и выход по стопу ' + usdt(R.dec(pl.fees)) + ' = ' + two(feesR) + ' R']);
+      var ref = R.dec(pl.ref), diff = R.qabs(R.sub(ref, S.cur.E));
+      v.calc.push(['Заявка ' + (d === 1 ? 'ниже' : 'выше') + ' цены на ' + px(diff) + ' (' +
+        two(R.q10(R.mul(R.div(diff, ref), R.HUNDRED))) + ' %) · PostOnly: только мейкер']);
+    }
+    var after = '«' + labels('q', p.k, p.s, d).button + '» внизу';
+    v.calc.push([hasTp ? 'Цель у ждущей заявки только двигается; снять её — после исполнения (' + after + ')'
+      : 'Цели у заявки нет; поставить её — после исполнения (' + after + ')', 'muted']);
+    v.calc.push(['Маржу и ликвидацию на новой цене проверит бот', 'muted']);
+    if (ready) {
+      v.summary = ['Вход ' + px(S.cur.E) + ' · ' + (sz ? qtyTxt(R.dec(sz.qty)) + ' · риск ' + R.toFixedHE(R.dec(sz.risk_plan), 2)
+        : 'объём —') + ' · ' + (pl && pl.target !== null ? 'цель ' + (pl.r_target !== null ? rWords(pl.r_target)
+        : px(R.dec(pl.target))) : 'без цели'), !!(c.check && c.check[0] !== 'no_change')];
+    }
+    return v;
+  }
+
   // ------------------------------------------------------------------ строки линий
   function movable(res) {
+    if (isW()) return ['E', 'SL'].concat(has(S.cur.TP) ? ['TP'] : []);   // 19.3: цена, стоп, цель заявки
     if (S.mode === 'q') {
       var q = ['SL'].concat(has(shownTP(res)) ? ['TP'] : []);
       if (S.t2 && S.t2.avail && S.t2.on && has(S.t2.px)) q.push('T2');
@@ -995,13 +1098,13 @@
     var box = $('lines');
     box.textContent = '';
     S.rows = {};
-    var order = S.mode === 'n' && (S.et === 'l' || S.et === 'b') ? ['E', 'SL', 'TP'] : ['SL', 'TP'];
+    var order = (S.mode === 'n' && (S.et === 'l' || S.et === 'b')) || isW() ? ['E', 'SL', 'TP'] : ['SL', 'TP'];
     if (S.mode === 'q') {                         // 19.2: цель 2 и трейлинг открытой сделки
       if (S.t2 && (S.t2.avail || has(S.t2.start))) order.push('T2');
       if (S.tr && (S.tr.avail || S.tr.live)) order.push('TA', 'TD');
     }
     order.forEach(function (k) { lineRow(box, k); });
-    if (S.mode === 'q') {
+    if (S.mode === 'q' && !isW()) {
       S.rows.avg = staticRow(box, 'Средняя', px(R.dec(S.p.pa)), 'gray');
       if (S.p.st === 'p') S.rows.wait = staticRow(box, 'Остаток заявки', qtyTxt(R.dec(S.p.ql)) + ' по ' + px(R.dec(S.p.ep)), 'gray');
     }
@@ -1044,8 +1147,17 @@
     box.appendChild(row);
     return { kind: 'static', row: row, dot: dot, colorKey: colorKey };
   }
+  /** 19.3: подпись линии ждущей лимитки — «как сейчас» или «сейчас 181.60, −20 шагов»; у цены — и край рынка. */
+  function wNote(k) {
+    var d = S.p.d, cur = S.cur[k], st0 = S.start[k];
+    if (k === 'TP' && !has(st0)) return 'цели нет — поставить её можно после исполнения';
+    var t = R.eq(cur, st0) ? 'как сейчас' : 'сейчас ' + px(st0) + ', ' + stepsTxt(cur, st0);
+    if (k === 'E' && S.tk) t += ' · ' + (d === 1 ? 'bid ' + px(S.tk.bid) : 'ask ' + px(S.tk.ask));
+    return t;
+  }
   function lineNote(k, res) {
     var p = S.p, d = S.d;
+    if (isW()) return wNote(k);
     if (S.mode === 'q') {
       if (k === 'SL') return R.eq(S.cur.SL, S.start.SL) ? 'как сейчас' : 'сейчас ' + px(S.start.SL) + ', ' + stepsTxt(S.cur.SL, S.start.SL);
       if (k === 'T2') return t2Note();
@@ -1125,6 +1237,7 @@
       r.btns[0].disabled = r.btns[1].disabled = !canStep;
       var canJump = ready && !(k === 'TP' && S.mode === 'q' && S.noTp) && !!S.tk;
       if (c3) canJump = canJump && (k === 'T2' ? S.t2.avail && S.t2.on : S.tr.avail && S.tr.on);
+      if (isW() && k === 'TP' && !has(S.start.TP)) canJump = false;   // 19.3: цель у ждущей не ставится
       r.btns[2].disabled = r.btns[3].disabled = !canJump;
     });
   }
@@ -1314,9 +1427,11 @@
   function jump(k, up) {
     if (!S.tk) return;
     var d = S.mode === 'n' ? S.d : S.p.d, bid = S.tk.bid, ask = S.tk.ask, p = S.p, v = null;
-    var limit = S.mode === 'n' && (S.et === 'l' || S.et === 'b');   // у пробоя стоп и цель — от уровня
+    // у пробоя стоп и цель — от уровня; 19.3: у ждущей лимитки — от цены заявки
+    var limit = (S.mode === 'n' && (S.et === 'l' || S.et === 'b')) || isW();
     var lv = levelsAll();
     if (k === 'T2' || k === 'TA' || k === 'TD') { jumpC3(k, up); return; }
+    if (isW() && k === 'TP' && !has(S.cur.TP)) return;               // 19.3: цель у ждущей не ставится
     if (k === 'E' && S.et === 'b') {
       if (!has(S.cur.E)) return;
       v = R.stepBreakout(d, S.cur.E, levelsM5(), lastPrice(), up !== (d === 1), S.tick, p.bg);
@@ -1383,6 +1498,7 @@
   function renderTpBar(res) {
     var box = $('tpBar');
     box.textContent = '';
+    if (isW()) return;                            // 19.3: у ждущей лимитки «Без цели» и «Поставить цель» нет
     if (S.mode === 'q') {
       if (has(S.start.TP) || has(S.cur.TP)) {
         segButton(box, S.noTp ? 'Вернуть цель' : 'Без цели', S.noTp, function () {
@@ -1546,7 +1662,7 @@
       if (has(v)) out.push(R.toNum(v));
     });
     if (S.mode === 'q') {
-      out.push(R.toNum(R.dec(S.p.pa)));
+      if (S.p.pa) out.push(R.toNum(R.dec(S.p.pa)));     // 19.3: у ждущей лимитки средней нет
       if (S.p.ep) out.push(R.toNum(R.dec(S.p.ep)));
       if (S.noTp && S.p.tp) out.push(R.toNum(R.dec(S.p.tp)));
       ['T2', 'TA', 'TD'].forEach(function (k) {     // 19.2: цель 2 и трейлинг
@@ -1595,7 +1711,12 @@
         var tdp = trLinePx();
         if (has(tdp)) line('TD', tdp, c.red, LS.Dashed, S.sel === 'TD' ? 2 : 1, 'трейлинг', true);
       }
-      line('avg', R.dec(S.p.pa), c.gray, LS.Solid, 1, 'средняя', false);
+      if (isW()) {                                 // 19.3: цена ждущей заявки (синяя) и прежняя цена
+        line('E', S.cur.E, c.blue, LS.Solid, S.sel === 'E' ? 3 : 2, 'Вход', true);
+        if (!R.eq(S.cur.E, S.start.E)) line('e0', S.start.E, c.gray, LS.Dotted, 1, 'заявка было', false);
+      } else {
+        line('avg', R.dec(S.p.pa), c.gray, LS.Solid, 1, 'средняя', false);
+      }
       if (res && res.c && res.c.be) line('be', R.dec(res.c.be), c.gray, LS.Dotted, 1, 'безубыток', false);
       if (S.p.st === 'p') {
         line('wait', R.dec(S.p.ep), c.gray, LS.Dotted, 1, 'ждёт ' + R.fmtQty(R.dec(S.p.ql), R.dec(S.p.qs)) + ' по ' +
